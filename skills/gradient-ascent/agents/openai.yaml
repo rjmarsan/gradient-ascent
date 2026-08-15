@@ -1,0 +1,7 @@
+interface:
+  display_name: "Gradient Ascent Setup"
+  short_description: "Set up a private coaching workspace"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $gradient-ascent to set up coaching in this workspace."

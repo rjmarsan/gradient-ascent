@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coach Setup Recovery"
+  short_description: "Import optional Apple Health or Garmin exports"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $coach-setup-recovery to import the recovery and health export that fits my setup."

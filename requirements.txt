@@ -1,0 +1,4 @@
+et-xmlfile==2.0.0
+fitdecode==0.11.0
+openpyxl==3.1.5
+python-dotenv==1.2.2

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coach Setup Activities"
+  short_description: "Connect Strava and activity-history sources"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $coach-setup-activities to import my Strava archive or explain my activity-history setup."

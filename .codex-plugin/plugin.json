@@ -1,0 +1,41 @@
+{
+  "name": "gradient-ascent",
+  "version": "0.1.0",
+  "description": "Local-first cycling coaching, training-plan imports, activity history, recovery data, and dashboards for Codex.",
+  "author": {
+    "name": "Gradient Ascent Contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cycling",
+    "training",
+    "coach",
+    "strava",
+    "garmin",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Gradient Ascent",
+    "shortDescription": "Goals, plans, local data imports, notes, and cycling advice.",
+    "longDescription": "Gradient Ascent packages a local-first cycling workflow: formal goals, plan imports, official Strava and Garmin account archives, Apple Health exports, a local Training Center, persistent coach notes, and multi-lens coaching advice.",
+    "developerName": "Gradient Ascent Contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use $gradient-ascent to set up coaching in this workspace.",
+      "Use $coach-setup-plan to import my training calendar and event plan.",
+      "Use $coach-setup-activities to import activity history from my Strava archive.",
+      "Use $coach-setup-recovery to import recovery and health exports.",
+      "Use $coach-setup-status to tell me what Gradient Ascent has configured and what matters next.",
+      "Use $gradient-ascent-goals to formalize my goals.",
+      "Use $coach-advice to adjust next week.",
+      "Use $coach-sync-refresh to refresh my dashboard.",
+      "Use $coach-note to save this ride insight."
+    ],
+    "brandColor": "#2F6F4E"
+  }
+}

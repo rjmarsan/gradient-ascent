@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# Local/private athlete data.
+data/
+gradient-ascent-data/
+private-data/
+*.log

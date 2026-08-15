@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coach Sync Refresh"
+  short_description: "Refresh local imports and rebuild coaching outputs"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $coach-sync-refresh to refresh configured local imports, rebuild the Training Center, and report freshness plus any blockers."

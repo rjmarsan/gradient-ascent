@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coach Setup Plan"
+  short_description: "Import cycling plans and race calendars"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $coach-setup-plan to import my local training calendar or record that I have no current plan."

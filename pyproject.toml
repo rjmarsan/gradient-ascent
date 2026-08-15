@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gradient-ascent"
+version = "0.1.0"
+description = "Local-first cycling coaching, data import, and dashboard workflows for Codex."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Gradient Ascent Contributors" }]
+dependencies = [
+  "et-xmlfile==2.0.0",
+  "fitdecode==0.11.0",
+  "openpyxl==3.1.5",
+  "python-dotenv==1.2.2",
+]
+keywords = ["codex", "coach", "cycling", "strava", "garmin", "training"]
+
+[project.scripts]
+gradient-ascent = "gradient_ascent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gradient_ascent*"]
+
+[tool.setuptools.package-data]
+gradient_ascent = [
+  "workspace_templates/.env.example",
+  "workspace_templates/.gitignore",
+  "workspace_templates/*.md",
+  "workspace_templates/**/*.md",
+  "workspace_templates/**/*.json",
+  "workspace_templates/**/*.py",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

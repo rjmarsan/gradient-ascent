@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coach Goals"
+  short_description: "Define measurable cycling goals and tradeoffs"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $gradient-ascent-goals to turn my cycling goals, events, and constraints into a coaching contract."

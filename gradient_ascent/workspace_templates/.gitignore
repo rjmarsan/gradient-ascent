@@ -1,0 +1,18 @@
+.env
+logs/
+*.log
+.codex/cache/
+derived/.cache/
+
+# Raw GPS and health exports are intentionally opt-in for git.
+strava/details/
+strava/laps/
+strava/streams/
+recordings/
+garmin/
+apple_health/
+integrations/
+imports/strava-export/
+imports/activity-recordings/
+imports/garmin-connect/
+imports/apple-health/

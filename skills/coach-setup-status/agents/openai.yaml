@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coach Setup Status"
+  short_description: "Show what is configured and what matters next"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $coach-setup-status to tell me what Gradient Ascent has set up and the single best next step."

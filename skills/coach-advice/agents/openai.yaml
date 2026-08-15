@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coach Advice"
+  short_description: "Synthesize cyclist, coach, and physiology advice"
+  icon_small: "./assets/gradient-ascent.svg"
+  icon_large: "./assets/gradient-ascent.svg"
+  brand_color: "#2F6F4E"
+  default_prompt: "Use $coach-advice to answer this training question with professional-cyclist, endurance-coach, and exercise-physiology lenses, then give me one synthesized recommendation plus the key questions."

@@ -12,9 +12,10 @@ from .config import ensure_private_data_dir, load_config
 from .connections import provider_values
 from .garmin import import_garmin_export
 from .insights import build_insights
+from .recording_repair import repair_recordings
 from .storage import read_json, write_json
 from .training_center import build_training_center
-from .workspace_lock import workspace_lock
+from .workspace_lock import workspace_identity, workspace_lock
 
 
 POST_SYNC_SUMMARY_FILENAME = "post_sync_summary.json"
@@ -125,11 +126,15 @@ def refresh_workspace(
     expected_identity: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     data_dir = ensure_private_data_dir(data_dir, action="refresh coaching workspace")
-    with workspace_lock(data_dir, expected_identity=expected_identity):
+    identity = expected_identity if expected_identity is not None else workspace_identity(data_dir)
+    with workspace_lock(data_dir, expected_identity=identity):
         derived_dir = data_dir / "derived"
         calendar_path = data_dir / "calendar.json"
 
         imports = _refresh_configured_imports(data_dir)
+        imports["recording_repair"] = repair_recordings(data_dir, expected_identity=identity)
+        with workspace_lock(data_dir, expected_identity=identity):
+            pass
         canonical = build_canonical_files(data_dir)
         insights = build_insights(
             data_dir,

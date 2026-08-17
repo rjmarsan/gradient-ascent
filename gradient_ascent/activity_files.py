@@ -10,6 +10,7 @@ import fitdecode
 
 
 SUPPORTED_RECORDING_FORMATS = frozenset({"fit", "tcx", "gpx"})
+RECORDING_STREAM_VERSION = 2
 SEMICIRCLES_TO_DEGREES = 180.0 / (2**31)
 
 
@@ -23,8 +24,9 @@ def recording_format(filename: str) -> str | None:
 
 def parse_activity_recording(handle: BinaryIO, filename: str) -> dict[str, Any]:
     format_name = recording_format(filename)
+    session = {}
     if format_name == "fit":
-        points, laps = _parse_fit(handle)
+        points, laps, session = _parse_fit(handle)
     elif format_name == "tcx":
         points, laps = _parse_tcx(handle)
     elif format_name == "gpx":
@@ -39,7 +41,7 @@ def parse_activity_recording(handle: BinaryIO, filename: str) -> dict[str, Any]:
         "format": format_name,
         "streams": streams,
         "laps": {"laps": laps, "source": "strava_archive_recording", "format": format_name},
-        "summary": _recording_summary(points, laps),
+        "summary": {**_recording_summary(points, laps), **session},
     }
 
 
@@ -79,14 +81,6 @@ def _recording_summary(
         for previous, current in elevation_segments
     ) if elevation_segments else None
     average_watts = _average(points, "watts")
-    weighted_values = [
-        (
-            _safe_float(lap.get("weighted_average_watts")),
-            _safe_float(lap.get("moving_time") or lap.get("elapsed_time")),
-        )
-        for lap in laps
-    ]
-    weighted_average_watts = _weighted_average(weighted_values)
     return _clean_mapping(
         {
             "start_date": _render_timestamp(first_time),
@@ -97,7 +91,6 @@ def _recording_summary(
             "average_heartrate": _average(points, "heartrate"),
             "max_heartrate": _maximum(points, "heartrate"),
             "average_watts": average_watts,
-            "weighted_average_watts": weighted_average_watts,
             "max_watts": _maximum(points, "watts"),
             "average_cadence": _average(points, "cadence"),
             "average_temp": _average(points, "temp"),
@@ -205,9 +198,32 @@ def _fit_lap(values: dict[str, Any], index: int) -> dict[str, Any]:
     )
 
 
-def _parse_fit(handle: BinaryIO) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _fit_session(values: dict[str, Any]) -> dict[str, Any]:
+    """Only a single device session can supply whole-activity power metrics."""
+    result = {}
+    for source, target, maximum in (
+        ("normalized_power", "weighted_average_watts", 10000),
+        ("training_stress_score", "estimated_tss", 100000),
+        ("intensity_factor", "intensity_factor", 100),
+        ("total_timer_time", "timer_time", 31 * 86400),
+        ("total_elapsed_time", "elapsed_time", 31 * 86400),
+    ):
+        raw = values.get(source)
+        value = _safe_float(raw)
+        if not isinstance(raw, bool) and value is not None and math.isfinite(value) and 0 <= value <= maximum:
+            result[target] = value
+    if result.get("timer_time", 0) > result.get("elapsed_time", 31 * 86400):
+        result.pop("timer_time", None)
+    if "weighted_average_watts" in result:
+        result["weighted_average_watts_source"] = "fit_session"
+    return result
+
+
+def _parse_fit(handle: BinaryIO) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     points: list[dict[str, Any]] = []
     laps: list[dict[str, Any]] = []
+    sessions: list[dict[str, Any]] = []
+    timer_events: list[tuple[datetime, bool]] = []
     with fitdecode.FitReader(
         handle,
         check_crc=fitdecode.CrcCheck.WARN,
@@ -220,7 +236,30 @@ def _parse_fit(handle: BinaryIO) -> tuple[list[dict[str, Any]], list[dict[str, A
                 points.append(_fit_point(_fit_values(frame)))
             elif frame.name == "lap":
                 laps.append(_fit_lap(_fit_values(frame), len(laps) + 1))
-    return points, laps
+            elif frame.name == "session":
+                sessions.append(_fit_session(_fit_values(frame)))
+            elif frame.name == "event":
+                values = _fit_values(frame)
+                timestamp = _timestamp(values.get("timestamp"))
+                event_type = values.get("event_type")
+                if values.get("event") in ("timer", 0) and timestamp is not None:
+                    if event_type in ("start", 0):
+                        timer_events.append((timestamp, True))
+                    elif event_type in ("stop", "stop_all", "stop_disable", "stop_disable_all", 1, 4, 8, 9):
+                        timer_events.append((timestamp, False))
+    if timer_events:
+        timer_events.sort(key=lambda event: event[0])
+        cursor = 0
+        active = None
+        for point in points:
+            timestamp = point.get("timestamp")
+            if timestamp is None:
+                continue
+            while cursor < len(timer_events) and timer_events[cursor][0] <= timestamp:
+                active = timer_events[cursor][1]
+                cursor += 1
+            point["timer_active"] = active
+    return points, laps, sessions[0] if len(sessions) == 1 else {}
 
 
 def _local_name(tag: str) -> str:
@@ -404,16 +443,20 @@ def _stream_payload(points: list[dict[str, Any]], format_name: str) -> dict[str,
     if not timed:
         return {"streams": [], "source": "strava_archive_recording", "format": format_name}
 
-    # Preserve a clean, aligned HR/power timeline when both sensors exist. FIT and TCX
-    # recordings can include sparse records for events that omit one of these fields.
-    core = [
-        point
-        for point in timed
-        if point.get("heartrate") is not None and point.get("watts") is not None
-    ]
-    if len(core) >= 2 and len(core) >= len(timed) / 2:
-        timed = core
-
+    # Sensor absence is represented by None on the shared timeline. Filtering
+    # on another sensor would silently discard valid power (or HR) samples.
+    aligned: list[dict[str, Any]] = []
+    for point in timed:
+        if aligned and aligned[-1]["timestamp"] == point["timestamp"] and all(
+            value is None or aligned[-1].get(key) is None or aligned[-1][key] == value
+            for key, value in point.items()
+        ):
+            aligned[-1].update({key: value for key, value in point.items() if value is not None})
+        else:
+            # Conflicting same-time values remain visible and make the power
+            # estimator fail closed; complementary sensor frames lose nothing.
+            aligned.append(dict(point))
+    timed = aligned
     first_timestamp = timed[0]["timestamp"]
     streams = [
         _stream(
@@ -431,6 +474,7 @@ def _stream_payload(points: list[dict[str, Any]], format_name: str) -> dict[str,
         "temp",
         "grade_smooth",
         "watts",
+        "timer_active",
     ):
         values = [point.get(stream_type) for point in timed]
         if any(value is not None for value in values):
@@ -444,6 +488,7 @@ def _stream_payload(points: list[dict[str, Any]], format_name: str) -> dict[str,
     streams.append(_stream("moving", moving))
     return {
         "streams": streams,
+        "version": RECORDING_STREAM_VERSION,
         "source": "strava_archive_recording",
         "format": format_name,
     }

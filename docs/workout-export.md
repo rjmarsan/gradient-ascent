@@ -35,6 +35,14 @@ confirmed, tentative, or cancelled status, location, and priority preserved. A
 skipped event stays cancelled; an undecided event is not silently promoted into a
 commitment. Same-date entries from different sources remain separate.
 
+The dashboard can forecast load from an explicit workout's power targets using
+complete 30-second rolling averages. That forecast is separate from the exported
+instructions and from recorded TSS: it does not change the workout, establish
+completion, or promise an identical device score. Open targets, insufficient
+duration, or missing FTP for watt-based targets can leave forecast TSS unknown
+without preventing an otherwise valid workout export. See
+[training-load calculations](training-load.md#planned-load).
+
 ## Author explicit workout steps
 
 The existing weekly plan can contain useful human instructions, but a phrase such as

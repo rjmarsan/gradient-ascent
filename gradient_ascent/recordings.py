@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .activity_files import parse_activity_recording, recording_format
+from .activity_files import RECORDING_STREAM_VERSION, parse_activity_recording, recording_format
 from .storage import read_json, write_json
 
 
@@ -146,6 +146,7 @@ def prepare_activity_recording(
         "start_date_local": start_date,
         **{key: value for key, value in summary.items() if value is not None},
         "recording_format": format_name,
+        "recording_parser_version": RECORDING_STREAM_VERSION,
         "recording_filename": display_filename,
         "import_source": LOCAL_RECORDING_SOURCE,
     }
@@ -169,8 +170,12 @@ def import_activity_recording(
     filename: str | None = None,
 ) -> dict[str, Any]:
     prepared = prepare_activity_recording(recording_path, filename=filename)
+    from .recording_repair import merge_recording_metrics, retain_recording_original
+
     activity = prepared["activity"]
     activity_id = activity["id"]
+    data_dir.mkdir(parents=True, exist_ok=True)
+    retain_recording_original(data_dir, recording_path.expanduser().resolve(), activity_id, activity["recording_format"])
     activities = read_json(_activities_path(data_dir), default={}) or {}
     if not isinstance(activities, dict):
         activities = {}
@@ -181,6 +186,16 @@ def import_activity_recording(
         existing.get("recording_filename") or activity["recording_filename"]
     )
     if existing.get("id") == activity_id:
+        existing_laps = read_json(data_dir / "recordings" / "laps" / f"{activity_id}.json", default={})
+        metrics = merge_recording_metrics(
+            existing,
+            {"summary": activity, "laps": prepared["laps"]},
+            existing_laps.get("laps") if isinstance(existing_laps, dict) else None,
+        )
+        for key in ("weighted_average_watts", "weighted_average_watts_source", "estimated_tss", "intensity_factor", "timer_time"):
+            activity.pop(key, None)
+            if key in metrics:
+                activity[key] = metrics[key]
         for key in (
             "start_date_local",
             "source_provider",

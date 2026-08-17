@@ -21,8 +21,8 @@ from typing import Any, Iterator
 from .storage import write_json
 
 
-METHOD = "power_stream_30s_v2"
-CACHE_VERSION = 2
+METHOD = "power_stream_30s_v3"
+CACHE_VERSION = 3
 MAX_SAMPLES = 250_000
 MAX_OBSERVED_SECONDS = 172_800
 MAX_TIMELINE_SECONDS = 7 * 86_400
@@ -45,13 +45,14 @@ def finite_number(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def estimate_normalized_power(times: Any, watts: Any) -> dict[str, Any] | None:
+def estimate_normalized_power(times: Any, watts: Any, *, timer_active: Any = None) -> dict[str, Any] | None:
     """Time-weighted one-second bins and complete 30-second rolling windows."""
     if (
         not isinstance(times, list)
         or not isinstance(watts, list)
         or len(times) != len(watts)
         or not 2 <= len(times) <= MAX_SAMPLES
+        or (timer_active is not None and (not isinstance(timer_active, list) or len(timer_active) != len(times)))
     ):
         return None
     previous: tuple[float, float] | None = None
@@ -65,7 +66,7 @@ def estimate_normalized_power(times: Any, watts: Any) -> dict[str, Any] | None:
         window.clear()
         window_sum = bin_seconds = bin_energy = 0.0
 
-    for raw_time, raw_power in zip(times, watts):
+    for index, (raw_time, raw_power) in enumerate(zip(times, watts)):
         timestamp, power = finite_number(raw_time), finite_number(raw_power)
         if timestamp is not None and 0 <= timestamp <= MAX_TIMELINE_SECONDS:
             if latest_timestamp is not None and timestamp <= latest_timestamp:
@@ -78,6 +79,7 @@ def estimate_normalized_power(times: Any, watts: Any) -> dict[str, Any] | None:
             or power is None
             or not 0 <= timestamp <= MAX_TIMELINE_SECONDS
             or not 0 <= power <= MAX_POWER_WATTS
+            or (timer_active is not None and timer_active[index] is not True)
         ):
             previous = None
             reset()
@@ -176,12 +178,12 @@ def _estimate_file(directory: int, name: str, expected: os.stat_result) -> dict[
             return None
         selected = {}
         for stream in payload["streams"]:
-            if isinstance(stream, dict) and stream.get("type") in {"time", "watts"}:
+            if isinstance(stream, dict) and stream.get("type") in {"time", "watts", "timer_active"}:
                 key = stream["type"]
                 if key in selected:
                     return None
                 selected[key] = stream.get("data")
-        return estimate_normalized_power(selected.get("time"), selected.get("watts"))
+        return estimate_normalized_power(selected.get("time"), selected.get("watts"), timer_active=selected.get("timer_active"))
     finally:
         if descriptor >= 0:
             os.close(descriptor)

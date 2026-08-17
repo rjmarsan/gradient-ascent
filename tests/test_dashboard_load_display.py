@@ -226,6 +226,30 @@ class DashboardLoadDisplayTest(unittest.TestCase):
         self.assertEqual(source_range["estimated_tss_min"], 74.6)
         self.assertEqual(source_range["estimated_tss_max"], 75.4)
 
+    def test_timer_based_coverage_is_not_described_as_moving_time(self):
+        activity = {
+            "estimated_tss": 50,
+            "estimated_tss_source": "estimated_power_stream",
+            "power_load_estimate": {
+                "scope": "recorded_power",
+                "coverage_ratio": 0.8,
+                "reported_duration_source": "timer_time",
+            },
+        }
+        display = training_center._activity_load_display(activity)
+        self.assertIn("device timer time", display["tss_description"])
+        self.assertNotIn("reported moving time", display["tss_description"])
+        total = training_center._totals_load_display(
+            {
+                "estimated_tss": 50,
+                "estimated_tss_estimated_activity_count": 1,
+                "estimated_tss_relevant_partial_activity_count": 1,
+                "estimated_tss_power_coverage_ratio": 0.8,
+            }
+        )
+        self.assertIn("device timer time", total["tss_description"])
+        self.assertIn("otherwise moving time", total["tss_description"])
+
     def test_unscored_walk_does_not_invalidate_a_cycling_total(self):
         totals = AggregateTotals()
         totals.add_activity(

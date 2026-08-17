@@ -99,7 +99,7 @@ class PlannedLoadTest(unittest.TestCase):
         load = structured_workout_load(workout)
         self.assertEqual(load["hours"], 1)
         self.assertEqual(load["duration_source"], "structured_steps")
-        self.assertEqual(load["method"], "structured_power_fourth_moment_v1")
+        self.assertEqual(load["method"], "structured_power_30s_v2")
         self.assertEqual((load["estimated_tss_min"], load["estimated_tss_max"]), (64, 100))
         absolute = {"type": "power", "unit": "watts", "low": 200, "high": 200}
         workout["steps"] = [step(3600, absolute)]
@@ -109,3 +109,73 @@ class PlannedLoadTest(unittest.TestCase):
         opened = structured_workout_load(workout, ftp_w=200)
         self.assertEqual(opened["hours"], 1)
         self.assertIsNone(opened["estimated_tss"])
+
+    def test_structured_short_intervals_use_complete_rolling_windows(self) -> None:
+        def step(low, high):
+            return {
+                "name": "Synthetic",
+                "duration_s": 30,
+                "intensity": "active",
+                "target": {"type": "power", "unit": "percent_ftp", "low": low, "high": high},
+            }
+
+        steps = [item for _ in range(20) for item in (step(110, 130), step(30, 50))]
+        expected = []
+        for position in (0, 1, 2):
+            values = []
+            for item in steps:
+                target = item["target"]
+                intensity = (target["low"], (target["low"] + target["high"]) / 2, target["high"])[
+                    position
+                ] / 100
+                values.extend([intensity] * item["duration_s"])
+            fourth = [
+                (math.fsum(values[index - 29 : index + 1]) / 30) ** 4
+                for index in range(29, len(values))
+            ]
+            expected.append(
+                round(len(values) / 3600 * math.sqrt(math.fsum(fourth) / len(fourth)) * 100, 1)
+            )
+        workout = {"sport": "cycling", "steps": steps}
+        before = repr(workout)
+        load = structured_workout_load(workout)
+        self.assertEqual(
+            (load["estimated_tss_min"], load["estimated_tss"], load["estimated_tss_max"]),
+            tuple(expected),
+        )
+        self.assertEqual(load["estimated_tss"], 26.3)
+        self.assertEqual(load["method"], "structured_power_30s_v2")
+        self.assertEqual(load["duration_source"], "structured_steps")
+        self.assertTrue(load["estimated"])
+        self.assertEqual(repr(workout), before)
+
+    def test_structured_window_minimum_and_existing_bounds_remain_explicit(self) -> None:
+        def step(seconds, unit="percent_ftp", low=80, high=80):
+            return {
+                "name": "Synthetic",
+                "duration_s": seconds,
+                "intensity": "active",
+                "target": {"type": "power", "unit": unit, "low": low, "high": high},
+            }
+
+        short = structured_workout_load({"sport": "cycling", "steps": [step(29)]})
+        self.assertEqual(short["hours"], round(29 / 3600, 4))
+        self.assertIsNone(short["estimated_tss"])
+        self.assertIn("30", short["note"])
+        exact = structured_workout_load({"sport": "cycling", "steps": [step(30)]})
+        self.assertEqual(exact["estimated_tss"], 0.5)
+        across_steps = structured_workout_load(
+            {"sport": "cycling", "steps": [step(15), step(15, "watts", 160, 160)]},
+            ftp_w=200,
+        )
+        self.assertEqual(across_steps["estimated_tss"], exact["estimated_tss"])
+        self.assertEqual(
+            structured_workout_load(
+                {"sport": "cycling", "steps": [step(86400, low=100, high=100)]}
+            )["estimated_tss"],
+            2400,
+        )
+        for steps in ([step(86400), step(1)], [step(30)] * 51):
+            self.assertIsNone(
+                structured_workout_load({"sport": "cycling", "steps": steps})["estimated_tss"]
+            )

@@ -116,7 +116,9 @@ class AggregateTotals:
                         self.estimated_tss_relevant_partial_activity_count += 1
                 observed = _safe_float(details.get("observed_duration_s"))
                 load_duration = _safe_float(details.get("load_duration_s"))
-                reported = _safe_float(moving_time)
+                reported = _safe_float(details.get("reported_duration_s"))
+                if reported is None:
+                    reported = _safe_float(moving_time)
                 if (
                     relevant_load
                     and reported is not None
@@ -335,22 +337,29 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
     weighted_watts = (
         power_estimate["estimated_normalized_power_w"] if uses_stream_estimate else source_np
     )
-    load_duration = moving_time_s
+    timer_seconds = _safe_float(activity.get("timer_time_s") if "timer_time_s" in activity else activity.get("timer_time"))
+    elapsed_seconds = _safe_float(activity.get("elapsed_time_s") if "elapsed_time_s" in activity else activity.get("elapsed_time"))
+    if timer_seconds is not None and (timer_seconds < 0 or (elapsed_seconds is not None and timer_seconds > elapsed_seconds)):
+        timer_seconds = None
+    reported_load_seconds = timer_seconds if timer_seconds is not None else moving_seconds
+    load_duration = reported_load_seconds
     estimate_details = None
     if uses_stream_estimate:
         observed = float(power_estimate["observed_duration_s"])
         load_duration = (
-            min(moving_seconds, observed) if moving_seconds and moving_seconds > 0 else None
+            min(reported_load_seconds, observed) if reported_load_seconds and reported_load_seconds > 0 else None
         )
         coverage = (
-            min(1.0, observed / moving_seconds) if moving_seconds and moving_seconds > 0 else None
+            min(1.0, observed / reported_load_seconds) if reported_load_seconds and reported_load_seconds > 0 else None
         )
         estimate_details = {
             **power_estimate,
             "load_duration_s": load_duration,
+            "reported_duration_s": reported_load_seconds,
+            "reported_duration_source": "timer_time" if timer_seconds is not None else "moving_time",
             "coverage_ratio": round(coverage, 6) if coverage is not None else None,
             "scope": "full_duration"
-            if moving_seconds and observed >= moving_seconds - 1
+            if reported_load_seconds and observed >= reported_load_seconds - 1
             else "recorded_power",
         }
     intensity_factor, estimated_tss = _training_load_fields(load_duration, weighted_watts, ftp_w)
@@ -409,6 +418,7 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
         "start_date_local": activity.get("start_date_local"),
         "date": activity.get("date") or _parse_local_date(activity.get("start_date_local")),
         "moving_time_s": moving_time_s,
+        "timer_time_s": timer_seconds,
         "elapsed_time_s": activity.get("elapsed_time_s")
         if "elapsed_time_s" in activity
         else activity.get("elapsed_time"),

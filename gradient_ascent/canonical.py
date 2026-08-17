@@ -59,6 +59,7 @@ def _activity(
     kilojoules: Any = None,
     estimated_tss: Any = None,
     intensity_factor: Any = None,
+    timer_time_s: Any = None,
     source_confidence: str = "high",
     raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -75,6 +76,7 @@ def _activity(
         "date": _parse_date(local_start),
         "moving_time_s": _safe_float(moving_time_s),
         "elapsed_time_s": _safe_float(elapsed_time_s),
+        "timer_time_s": _safe_float(timer_time_s),
         "distance_m": _safe_float(distance_m),
         "elevation_gain_m": _safe_float(elevation_gain_m),
         "average_heartrate": _safe_float(average_heartrate),
@@ -111,6 +113,8 @@ def strava_raw_to_activity(
         average_watts=item.get("average_watts"),
         weighted_average_watts=item.get("weighted_average_watts"),
         kilojoules=item.get("kilojoules"),
+        estimated_tss=item.get("estimated_tss"),
+        intensity_factor=item.get("intensity_factor"),
         raw=item,
     )
     average_temp_c = _safe_float(corrected_item.get("average_temp"))
@@ -166,6 +170,7 @@ def _recording_activities(data_dir: Path) -> list[dict[str, Any]]:
             kilojoules=item.get("kilojoules"),
             estimated_tss=item.get("estimated_tss"),
             intensity_factor=item.get("intensity_factor"),
+            timer_time_s=item.get("timer_time"),
             raw=item,
         )
         for item in activities

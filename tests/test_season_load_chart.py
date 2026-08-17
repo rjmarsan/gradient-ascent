@@ -204,6 +204,87 @@ class SeasonLoadChartTest(unittest.TestCase):
         self.assertIn("No supported recorded TSS (1 ride without load)", rendered)
         self.assertNotIn('class="season-recorded-area"', rendered)
 
+    def test_planned_trajectory_uses_the_central_estimate_not_the_upper_bound(self):
+        weeks = [
+            {
+                "start_date": "2026-01-05",
+                "end_date": "2026-01-11",
+                "planned_load": {
+                    "estimated_tss": 441,
+                    "estimated_tss_min": 242,
+                    "estimated_tss_max": 722.5,
+                    "estimated": True,
+                    "tss_source": "weekly_hours_budget",
+                    "assumed_if_min": 0.55,
+                    "assumed_if_max": 0.85,
+                    "qualifier": "Rough weekly forecast",
+                },
+                "totals": {"estimated_tss": 375.4},
+            },
+            {
+                "start_date": "2026-01-12",
+                "end_date": "2026-01-18",
+                "planned_load": {"estimated_tss_min": 300, "estimated_tss_max": 500},
+            },
+            {
+                "start_date": "2026-01-19",
+                "end_date": "2026-01-25",
+                "planned_load": {
+                    "estimated_tss": 900,
+                    "estimated_tss_min": 300,
+                    "estimated_tss_max": 500,
+                },
+            },
+        ]
+        series = self.run_chart("seasonLoadSeries(weeks,horizon,'2026-01-18')", weeks=weeks)
+        self.assertEqual([row["target_value"] for row in series["rows"]], [441, 400, None])
+        self.assertEqual([len(run) for run in series["trajectory_runs"]], [2])
+        rendered = self.run_chart(
+            "renderSeasonLoadChart(seasonLoadSeries(weeks,horizon,'2026-01-18'))", weeks=weeks
+        )
+        expected_y = round(108 - 441 / series["max_tss"] * 103, 2)
+        self.assertIn(f'class="season-target-line" d="M0,{expected_y}', rendered)
+        self.assertIn("central estimate 441 TSS", rendered)
+        self.assertIn('class="season-target-band"', rendered)
+
+    def test_season_provenance_counts_forecasts_and_incomplete_recorded_weeks(self):
+        weeks = [
+            {
+                "start_date": "2026-01-05",
+                "end_date": "2026-01-11",
+                "planned_load": {
+                    "estimated_tss": 441,
+                    "estimated_tss_min": 242,
+                    "estimated_tss_max": 722.5,
+                    "estimated": True,
+                    "tss_source": "weekly_hours_budget",
+                    "assumed_if_min": 0.55,
+                    "assumed_if_max": 0.85,
+                },
+                "totals": {"estimated_tss": 75.4},
+                "tss_partial": True,
+            },
+            {
+                "start_date": "2026-01-12",
+                "end_date": "2026-01-18",
+                "planned_load": {"estimated_tss": 0, "tss_source": "source_target"},
+                "totals": {"estimated_tss": None},
+            },
+        ]
+        result = self.run_chart(
+            "seasonLoadProvenance(seasonLoadSeries(weeks,horizon,'2026-01-18'))", weeks=weeks
+        )
+        self.assertEqual(
+            {
+                key: result[key]
+                for key in ("planned", "source", "forecast", "budget", "recorded", "incomplete")
+            },
+            {"planned": 2, "source": 1, "forecast": 1, "budget": 1, "recorded": 1, "incomplete": 1},
+        )
+        self.assertIn("weekly hours", result["note"])
+        self.assertIn("0.55–0.85", result["note"])
+        self.assertIn("not measured fitness", result["note"])
+
     def test_visible_chart_key_uses_tss_and_keeps_hours_in_week_totals(self):
         template = training_center.HTML_TEMPLATE
         for expected in (

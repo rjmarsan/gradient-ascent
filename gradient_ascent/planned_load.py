@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -307,7 +308,14 @@ def structured_workout_load(workout: Mapping[str, Any], *, ftp_w: Any = None) ->
         return _load(note="A valid explicit cycling workout is required.")
     seconds = sum(step["duration_s"] for step in steps)
     hours = (seconds / 3600.0,) * 2
+    if seconds < 30:
+        return _load(
+            hours,
+            duration_source="structured_steps",
+            note="Exact structured duration; at least 30 seconds are required for a complete rolling-power window.",
+        )
     ftp = _number(ftp_w, 3000)
+    segments = []
     fourth = [0.0, 0.0, 0.0]
     for step in steps:
         target = step["target"]
@@ -325,16 +333,35 @@ def structured_workout_load(workout: Mapping[str, Any], *, ftp_w: Any = None) ->
                 duration_source="structured_steps",
                 note="Structured power intensity exceeds the model's supported range.",
             )
-        for index, intensity in enumerate((low, (low + high) / 2, high)):
-            fourth[index] += step["duration_s"] * intensity**4
-    values = [100 * hours[0] * math.sqrt(value / seconds) for value in fourth]
+        segments.append((step["duration_s"], (low, (low + high) / 2, high)))
+
+    # The targets describe every prescribed second, so there is no need to
+    # infer missing samples or pad the first window. Keep windows continuous
+    # across step boundaries; resetting on each interval would bias short reps.
+    window: deque[tuple[float, float, float]] = deque()
+    rolling = [0.0, 0.0, 0.0]
+    windows = 0
+    for duration, targets in segments:
+        for _ in range(duration):
+            if len(window) == 30:
+                previous = window.popleft()
+                for index in range(3):
+                    rolling[index] -= previous[index]
+            window.append(targets)
+            for index in range(3):
+                rolling[index] += targets[index]
+            if len(window) == 30:
+                windows += 1
+                for index in range(3):
+                    fourth[index] += (max(0.0, rolling[index]) / 30.0) ** 4
+    values = [100 * hours[0] * math.sqrt(value / windows) for value in fourth]
     return _load(
         hours,
         (values[0], values[2]),
         duration_source="structured_steps",
         tss_source="structured_power_model",
-        method="structured_power_fourth_moment_v1",
+        method="structured_power_30s_v2",
         estimated=True,
         tss_value=values[1],
-        note="Independent structured-workout forecast from explicit step power targets; no telemetry, completion, or exact device TSS is implied.",
+        note="Independent structured-workout forecast from complete 30-second rolling averages of explicit step power targets; no telemetry, completion, or exact device TSS is implied.",
     )

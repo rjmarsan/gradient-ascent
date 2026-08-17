@@ -152,14 +152,17 @@ const state = {selectedWeekStart:'2026-08-17'};
 const calls = [];
 let missing = false, disabled = false;
 const select = {value:'2026-08-17'};
-const root = {set innerHTML(value) { document.activeElement = null; }};
-const document = {
-  activeElement:null,
-  getElementById(id) { return id === 'week-list' ? root : select; },
+const root = {
+  contains(node) { return node?.scope === 'current'; },
   querySelector(selector) {
     if (missing) return null;
     return {disabled, focus(options) { calls.push({selector, options}); }};
-  }
+  },
+  set innerHTML(value) { document.activeElement = null; }
+};
+const document = {
+  activeElement:null,
+  getElementById(id) { return id === 'week-list' ? root : select; },
 };
 const escapeHtml = value => String(value ?? '');
 const renderSeasonHorizon = () => '';
@@ -172,31 +175,35 @@ function bindSeasonHorizon() {}
 function requestAnimationFrame() {}
 function syncWeekIntervalLists() {}
 """
+            + self._functions("seasonFocusKey", "function renderCalendar(")
             + self._functions("renderWeek", "function bindSeasonHorizon(")
             + """
 const results = [];
 for (const scenario of [
-  {attribute:'data-season-today'},
-  {attribute:'data-season-track'},
-  {attribute:'data-unrelated-input'},
-  {attribute:'data-season-today', missing:true},
-  {attribute:'data-season-today', disabled:true}
+  {key:'today'},
+  {key:'track'},
+  {key:null},
+  {key:'today', missing:true},
+  {key:'today', disabled:true},
+  {key:'track', scope:'calendar'}
 ]) {
   calls.length = 0;
   missing = Boolean(scenario.missing);
   disabled = Boolean(scenario.disabled);
-  document.activeElement = {hasAttribute(name) { return name === scenario.attribute; }};
+  document.activeElement = {scope:scenario.scope || 'current',
+    getAttribute(name) { return name === 'data-season-focus' ? scenario.key : null; }};
   renderWeek();
   results.push([...calls]);
 }
 console.log(JSON.stringify({results}));
 """
         )
-        today, slider, unrelated, missing, disabled = result["results"]
+        today, slider, unrelated, missing, disabled, other_chart = result["results"]
         self.assertEqual(
-            today, [{"selector": "[data-season-today]", "options": {"preventScroll": True}}]
+            today, [{"selector": '[data-season-focus="today"]', "options": {"preventScroll": True}}]
         )
         self.assertEqual(
-            slider, [{"selector": "[data-season-track]", "options": {"preventScroll": True}}]
+            slider,
+            [{"selector": '[data-season-focus="track"]', "options": {"preventScroll": True}}],
         )
-        self.assertEqual((unrelated, missing, disabled), ([], [], []))
+        self.assertEqual((unrelated, missing, disabled, other_chart), ([], [], [], []))

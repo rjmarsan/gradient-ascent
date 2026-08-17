@@ -31,7 +31,7 @@ from .workspace_lock import cross_process_locking_available, workspace_lock
 
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-ACTIVITY_DETAILS_CACHE_VERSION = 5
+ACTIVITY_DETAILS_CACHE_VERSION = 6
 MAX_ACTIVITY_DETAIL_SIDECAR_BYTES = 64 * 1024 * 1024
 _training_center_build_lock = workspace_lock
 WEEKDAY_NAMES = {
@@ -6523,6 +6523,7 @@ HTML_TEMPLATE = """<!doctype html>
     .season-chart-key strong { color: #344e40; font: inherit; font-weight: 700; }
     .season-chart-key span { display: inline-flex; align-items: center; gap: 5px; }
     .season-chart-key i { width: 13px; height: 7px; background: #c7d4c1; border: 1px solid #a6b99e; }
+    .season-chart-key .trajectory-key i { height: 0; border: 0; border-top: 2px solid #789570; background: transparent; }
     .season-chart-key .recorded-key i { background: #597c65; border-color: #3e6550; }
 
     .season-selection-key {
@@ -6599,8 +6600,9 @@ HTML_TEMPLATE = """<!doctype html>
 
     .season-chart-grid { stroke: rgba(23, 63, 49, .13); stroke-width: 1; vector-effect: non-scaling-stroke; }
     .season-chart-grid.mid { stroke-dasharray: 2 5; }
+    .season-planned-area { fill: #d4dfcd; fill-opacity: .36; }
     .season-target-band { fill: #c7d4c1; fill-opacity: .82; }
-    .season-target-line { fill: none; stroke: #98ad90; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .season-target-line { fill: none; stroke: #789570; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
     .season-recorded-area { fill: #597c65; fill-opacity: .63; }
     .season-recorded-line { fill: none; stroke: #315a45; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
     .season-week-hit { fill: transparent; }
@@ -6620,6 +6622,37 @@ HTML_TEMPLATE = """<!doctype html>
     .season-chart-scale span { padding: 1px 3px; background: rgba(250, 250, 245, .83); }
     .season-chart-empty { position: absolute; inset: 0 0 15px; display: grid; place-items: center; color: #777e74; font-size: .7rem; pointer-events: none; }
     .season-load-readout { margin: -1px 0 0; color: #667265; font: .53rem "SFMono-Regular", Consolas, "Liberation Mono", monospace; line-height: 1.5; }
+
+    .season-toolbar { flex-direction: row; align-items: center; flex-wrap: wrap; padding: 14px 24px; }
+    .season-toolbar > div { width: auto; }
+    .season-toolbar h2 { font-size: .65rem; }
+    .season-toolbar .meta { margin: 5px 0 0; font-size: .62rem; letter-spacing: .025em; text-transform: none; }
+    .season-toolbar .toolbar-actions { width: auto; margin-left: auto; }
+    .season-toolbar select { width: auto; min-width: 96px; }
+    .season-overview-horizon { gap: 12px; padding: 22px 24px 18px; }
+    .season-overview-horizon .season-horizon-head > div:first-child > strong { font-size: 1.55rem; }
+    .season-overview-horizon .season-horizon-races { flex-wrap: wrap; }
+    .season-overview-horizon .season-horizon-races .season-race { max-width: 190px; }
+    .season-overview-horizon .season-track { height: 270px; }
+    .season-overview-horizon .season-track-meta { font-size: .58rem; margin-top: 0; }
+    .season-overview-horizon .season-load-readout { font-size: .64rem; }
+    .season-overview-horizon .season-chart-scale { font-size: .53rem; }
+    .season-overview-copy { max-width: 760px; margin: 7px 0 0; color: #697366; font-size: .72rem; line-height: 1.55; }
+    .season-overview-stats { display: flex; flex-wrap: wrap; gap: 7px 20px; margin: 0; color: #687365; font: .56rem "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    .season-overview-stats strong { color: #294735; font-weight: 600; }
+    .season-open-week { border: 1px solid rgba(23,63,49,.22); border-radius: 3px; padding: 5px 8px; background: transparent; color: #294735; font: inherit; cursor: pointer; }
+    .season-open-week:disabled { opacity: .5; cursor: default; }
+    .season-open-week:focus-visible { outline: 2px solid #173f31; outline-offset: 2px; }
+    .season-event-track { position: relative; min-height: 23px; margin: -4px 0 -3px; border-top: 1px solid rgba(23,63,49,.12); }
+    .season-event-marker { position: absolute; top: calc(var(--event-row, 0) * 18px); transform: translateX(-50%); display: grid; place-items: start center; width: 16px; height: 19px; padding: 0; border: 0; border-radius: 2px; background: transparent; color: #9a6b58; cursor: pointer; }
+    .season-event-marker::before { content: ""; width: 1px; height: 8px; background: currentColor; }
+    .season-event-marker::after { content: ""; position: absolute; top: 7px; width: 6px; height: 6px; transform: rotate(45deg); background: currentColor; }
+    .season-event-marker.tentative { color: #9b9c87; }
+    .season-event-marker:focus-visible { outline: 2px solid #173f31; outline-offset: 2px; z-index: 5; }
+    .season-event-list { color: #667265; font-size: .63rem; line-height: 1.5; }
+    .season-event-list summary { width: fit-content; cursor: pointer; }
+    .season-event-list > div { display: flex; flex-wrap: wrap; gap: 8px 20px; padding-top: 10px; }
+    .season-event-list .season-race { max-width: 240px; min-width: 0; }
 
     .season-track:focus-visible {
       outline: 2px solid #173f31;
@@ -6724,6 +6757,10 @@ HTML_TEMPLATE = """<!doctype html>
       .week-load-overview > div:nth-child(2) { border-right: 0; }
       .week-load-overview > div:nth-child(-n+2) { border-bottom: 1px solid var(--rule); }
       .season-track { height: 112px; }
+      .season-overview-horizon { padding: 16px 14px; }
+      .season-overview-horizon .season-track { height: 200px; }
+      .season-overview-horizon .season-horizon-head { flex-wrap: wrap; gap: 12px; }
+      .season-overview-horizon .season-horizon-races { flex-wrap: wrap; gap: 12px; }
     }
 
     body[data-view="weeks"] .week-desk {
@@ -7602,15 +7639,16 @@ HTML_TEMPLATE = """<!doctype html>
         </section>
 
         <section id="calendar-view" class="view panel">
-          <div class="toolbar">
+          <div class="toolbar season-toolbar">
             <div>
-              <h2>Calendar</h2>
+              <h2>Season</h2>
               <p id="calendar-meta" class="meta"></p>
             </div>
             <div class="toolbar-actions">
               <select id="calendar-year-select" aria-label="Select calendar year"></select>
             </div>
           </div>
+          <div id="season-overview"></div>
           <div id="calendar-grid" class="calendar-grid"></div>
         </section>
 
@@ -7758,11 +7796,14 @@ HTML_TEMPLATE = """<!doctype html>
       rideSidebarOpen: initialRideSidebarOpen(),
       connections: null
     };
-    state.calendarYear = state.selectedDate.slice(0, 4);
+    const requestedCalendarYear = new URLSearchParams(window.location.search).get("year");
+    state.calendarYear = state.view === "calendar" && /^[0-9]{4}$/.test(requestedCalendarYear || "")
+      ? requestedCalendarYear : state.selectedDate.slice(0, 4);
     state.selectedWeekStart = weekForDate(state.selectedDate)?.start_date || DATA.weeks[0]?.start_date || null;
 
     function initialView() {
       const requested = new URLSearchParams(window.location.search).get("view");
+      if (requested === "season") return "calendar";
       if (["today", "weeks", "calendar", "progress", "connections", "settings"].includes(requested)) {
         return requested;
       }
@@ -8491,10 +8532,20 @@ HTML_TEMPLATE = """<!doctype html>
       document.body.classList.toggle("has-scrolled", hasMoved);
     }
 
+    function syncNavigationUrl() {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", state.view);
+      if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(state.selectedDate || "")) url.searchParams.set("date", state.selectedDate);
+      if (state.view === "calendar" && /^[0-9]{4}$/.test(state.calendarYear || "")) url.searchParams.set("year", state.calendarYear);
+      else url.searchParams.delete("year");
+      if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url.href);
+    }
+
     function setView(view) {
       state.view = view;
       document.body.dataset.view = view;
       document.body.classList.toggle("primary-shell", PRIMARY_VIEWS.has(view));
+      if (view === "calendar") renderSeasonOverview();
       if (view === "connections") {
         renderConnections();
         if (state.writeToken) void loadRideSetupStatus();
@@ -8508,6 +8559,7 @@ HTML_TEMPLATE = """<!doctype html>
       if (view === "today") {
         requestAnimationFrame(centerSelectedMonthDay);
       }
+      syncNavigationUrl();
     }
 
     function connectionStatusLabel(provider) {
@@ -8935,7 +8987,21 @@ HTML_TEMPLATE = """<!doctype html>
       });
     }
 
+    function seasonFocusKey(root) {
+      const active = document.activeElement;
+      if (!active || !root?.contains(active)) return null;
+      const key = active.getAttribute("data-season-focus");
+      return typeof key === "string" && /^[a-z0-9-]+$/.test(key) ? key : null;
+    }
+
+    function restoreSeasonFocus(root, key) {
+      if (!root || !key || !/^[a-z0-9-]+$/.test(key)) return;
+      const target = root.querySelector(`[data-season-focus="${key}"]`);
+      if (target && !target.disabled) target.focus({ preventScroll: true });
+    }
+
     function renderCalendar() {
+      renderSeasonOverview();
       const grouped = new Map();
       const visibleDays = DATA.days.filter((day) => day.date.slice(0, 4) === state.calendarYear);
       for (const day of visibleDays) {
@@ -8957,10 +9023,30 @@ HTML_TEMPLATE = """<!doctype html>
       });
     }
 
+    function renderSeasonOverview() {
+      const root = document.getElementById("season-overview");
+      if (!root) return;
+      const focus = seasonFocusKey(root);
+      const eventsOpen = root.querySelector(".season-event-list")?.open === true;
+      const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || null;
+      root.innerHTML = renderSeasonHorizon(week, { scope: "calendar", year: state.calendarYear });
+      const events = root.querySelector(".season-event-list");
+      if (events && eventsOpen) events.open = true;
+      bindSeasonHorizon(root.querySelector("[data-season-jump]"));
+      restoreSeasonFocus(root, focus);
+    }
+
     function renderCalendarYearSelect() {
       const select = document.getElementById("calendar-year-select");
       if (!select) return;
-      const years = [...new Set(DATA.days.map((day) => day.date.slice(0, 4)))].sort().reverse();
+      const dates = [
+        ...(DATA.days || []).map((day) => day.date),
+        ...(DATA.weeks || []).flatMap((week) => [week.start_date, week.end_date]),
+        ...(DATA.phases || []).flatMap((phase) => [phase.start_date, phase.end_date]),
+        ...(DATA.events || []).map((event) => event.date)
+      ];
+      const years = [...new Set(dates.filter((value) => typeof value === "string" && /^[0-9]{4}-/.test(value)).map((value) => value.slice(0, 4)))].sort().reverse();
+      if (!years.length) years.push(TODAY.slice(0, 4));
       if (!years.includes(state.calendarYear)) state.calendarYear = years[0] || TODAY.slice(0, 4);
       select.innerHTML = years
         .map((year) => `<option value="${escapeHtml(year)}">${escapeHtml(year)}</option>`)
@@ -9937,7 +10023,7 @@ HTML_TEMPLATE = """<!doctype html>
       const spanEnd = dateTime(layout?.end_date) + dayMs;
       const todayTime = dateTime(today);
       if (!Number.isFinite(spanStart) || !Number.isFinite(spanEnd) || spanEnd <= spanStart) {
-        return { rows: [], target_runs: [], recorded_runs: [], max_tss: 100 };
+        return { rows: [], target_runs: [], trajectory_runs: [], recorded_runs: [], max_tss: 100 };
       }
       const percent = (time) => 100 * (time - spanStart) / (spanEnd - spanStart);
       const rows = (Array.isArray(weeks) ? weeks : []).map((week) => {
@@ -9951,6 +10037,9 @@ HTML_TEMPLATE = """<!doctype html>
           targetMin = targetMax = numeric(plan.estimated_tss);
         }
         if (targetMin === null || targetMax === null || targetMax < targetMin) targetMin = targetMax = null;
+        let targetValue = plan.estimated_tss == null && targetMin !== null
+          ? (targetMin + targetMax) / 2 : numeric(plan.estimated_tss);
+        if (targetMin === null || targetValue === null || targetValue < targetMin || targetValue > targetMax) targetValue = null;
         const actual = numeric(week.totals?.estimated_tss);
         const future = !Number.isFinite(todayTime) || start > todayTime;
         const clippedStart = Math.max(start, spanStart);
@@ -9960,10 +10049,14 @@ HTML_TEMPLATE = """<!doctype html>
           start_ms: clippedStart, end_ms: clippedEnd,
           left: percent(clippedStart), right: percent(clippedEnd),
           center: percent((clippedStart + clippedEnd) / 2),
-          target_min: targetMin, target_max: targetMax,
+          target_min: targetMin, target_max: targetMax, target_value: targetValue,
           target_qualifier: String(plan.qualifier || (plan.estimated ? "Forecast" : "")),
+          target_source: String(plan.tss_source || ""), target_estimated: plan.estimated === true,
+          target_note: String(plan.note || ""),
+          target_if_min: numeric(plan.assumed_if_min), target_if_max: numeric(plan.assumed_if_max),
           recorded_tss: future ? null : actual,
           recorded_qualifier: String(week.tss_qualifier || ""),
+          recorded_partial: week.tss_partial === true,
           to_date: Number.isFinite(todayTime) && start <= todayTime && todayTime < end,
           future
         };
@@ -9990,7 +10083,7 @@ HTML_TEMPLATE = """<!doctype html>
       const tick = maximum <= 200 ? 50 : maximum <= 1000 ? 100 : maximum <= 2500 ? 250 : 500;
       const ceiling = Math.ceil(maximum / tick) * tick;
       return {
-        rows, target_runs: runs("target_min"), recorded_runs: runs("recorded_tss"),
+        rows, target_runs: runs("target_min"), trajectory_runs: runs("target_value"), recorded_runs: runs("recorded_tss"),
         max_tss: Math.max(100, Number.isFinite(ceiling) ? ceiling : maximum)
       };
     }
@@ -10010,7 +10103,27 @@ HTML_TEMPLATE = """<!doctype html>
       const actual = row.recorded_tss === null
         ? row.future ? "Not recorded yet" : qualify("No supported recorded TSS", row.recorded_qualifier)
         : qualify(`Recorded ${seasonTss(row.recorded_tss)} TSS${row.to_date ? " so far" : ""}`, row.recorded_qualifier);
-      return `${target} · ${actual}`;
+      const center = row.target_value !== null && row.target_min !== row.target_max
+        ? ` · central estimate ${seasonTss(row.target_value)} TSS` : "";
+      return `${target}${center} · ${actual}`;
+    }
+
+    function seasonLoadProvenance(series) {
+      const planned = series.rows.filter((row) => row.target_min !== null);
+      const forecasts = planned.filter((row) => row.target_estimated);
+      const budgets = planned.filter((row) => row.target_source === "weekly_hours_budget");
+      const recorded = series.rows.filter((row) => row.recorded_tss !== null);
+      const assumptions = [...new Set(budgets.filter((row) =>
+        row.target_if_min !== null && row.target_if_max !== null && row.target_if_max >= row.target_if_min
+      ).map((row) => `${row.target_if_min.toFixed(2)}–${row.target_if_max.toFixed(2)}`))];
+      const budgetNote = budgets.length
+        ? `${budgets.length} ${budgets.length === 1 ? "week is" : "weeks are"} forecast from weekly hours${assumptions.length === 1 ? ` (IF ${assumptions[0]})` : " using stated intensity assumptions"}. ` : "";
+      return {
+        planned: planned.length, source: planned.length - forecasts.length,
+        forecast: forecasts.length, budget: budgets.length, recorded: recorded.length,
+        incomplete: recorded.filter((row) => row.recorded_partial).length,
+        note: `${budgetNote}The line is the central planned estimate; shading shows its range. TSS is training load, not measured fitness.`
+      };
     }
 
     function renderSeasonLoadChart(series) {
@@ -10028,23 +10141,30 @@ HTML_TEMPLATE = """<!doctype html>
       const targets = series.target_runs.map((run) => {
         const high = points(run, "target_max");
         const low = points(run, "target_min");
-        return `<path class="season-target-band" d="${path(high)} ${path(low.slice().reverse()).replace(/^M/, "L")} Z"></path><path class="season-target-line" d="${path(high)}"></path>`;
+        return `<path class="season-target-band" d="${path(high)} ${path(low.slice().reverse()).replace(/^M/, "L")} Z"></path>`;
       }).join("");
+      const plannedArea = series.trajectory_runs.map((run) => {
+        const values = points(run, "target_value");
+        return `<path class="season-planned-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path>`;
+      }).join("");
+      const trajectory = series.trajectory_runs.map((run) =>
+        `<path class="season-target-line" d="${path(points(run, "target_value"))}"></path>`
+      ).join("");
       const recorded = series.recorded_runs.map((run) => {
         const values = points(run, "recorded_tss");
         return `<path class="season-recorded-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path><path class="season-recorded-line" d="${path(values)}"></path>`;
       }).join("");
       const hasData = series.target_runs.length || series.recorded_runs.length;
       return `<svg class="season-load-chart" viewBox="0 0 ${width} 112" preserveAspectRatio="none" aria-hidden="true">
-        <title>Weekly TSS: planned range or forecast and recorded load</title>
+        <title>Weekly TSS: central planned estimate, range or forecast, and recorded load</title>
         <line class="season-chart-grid" x1="0" x2="${width}" y1="${baseline}" y2="${baseline}"></line>
         <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_tss / 2)}" y2="${y(series.max_tss / 2)}"></line>
-        ${targets}${recorded}
+        ${plannedArea}${targets}${recorded}${trajectory}
         ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}`)}</title></rect>`).join("")}
       </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_tss)} TSS</span><span>0 TSS</span></div>` : '<span class="season-chart-empty">No weekly TSS data</span>'}`;
     }
 
-    function seasonHorizonLayout(phases, currentWeek, selectedDate, today) {
+    function seasonHorizonLayout(phases, currentWeek, selectedDate, today, domain = null) {
       const dayMs = 86400000;
       const dateTime = (value) => {
         const text = String(value || "");
@@ -10057,9 +10177,12 @@ HTML_TEMPLATE = """<!doctype html>
         .map((phase) => ({ phase, start: dateTime(phase?.start_date), end: dateTime(phase?.end_date) + dayMs }))
         .filter(({ start, end }) => Number.isFinite(start) && Number.isFinite(end) && end > start)
         .sort((left, right) => left.start - right.start);
-      if (!rows.length) return null;
-      const spanStart = rows[0].start;
-      const spanEnd = Math.max(...rows.map((row) => row.end));
+      const domainStart = dateTime(domain?.start_date);
+      const domainEnd = dateTime(domain?.end_date) + dayMs;
+      const hasDomain = Number.isFinite(domainStart) && Number.isFinite(domainEnd) && domainEnd > domainStart;
+      if (!hasDomain && !rows.length) return null;
+      const spanStart = hasDomain ? domainStart : rows[0].start;
+      const spanEnd = hasDomain ? domainEnd : Math.max(...rows.map((row) => row.end));
       const span = spanEnd - spanStart;
       const percent = (time) => Math.max(0, Math.min(100, ((time - spanStart) / span) * 100));
       const range = (start, end) => {
@@ -10068,8 +10191,9 @@ HTML_TEMPLATE = """<!doctype html>
       };
       const rawWeekStart = dateTime(currentWeek?.start_date);
       const rawWeekEnd = dateTime(currentWeek?.end_date) + dayMs;
-      const weekStart = Number.isFinite(rawWeekStart) ? rawWeekStart : spanStart;
-      const weekEnd = Number.isFinite(rawWeekEnd) && rawWeekEnd > weekStart ? rawWeekEnd : weekStart + dayMs;
+      const hasWeek = Number.isFinite(rawWeekStart) && Number.isFinite(rawWeekEnd) && rawWeekEnd > rawWeekStart;
+      const weekStart = hasWeek ? rawWeekStart : spanStart;
+      const weekEnd = hasWeek ? rawWeekEnd : spanStart;
       const rawMarker = dateTime(selectedDate);
       const marker = Number.isFinite(rawMarker) && weekStart <= rawMarker && rawMarker < weekEnd
         ? rawMarker : weekStart;
@@ -10089,64 +10213,111 @@ HTML_TEMPLATE = """<!doctype html>
       return {
         start_date: new Date(spanStart).toISOString().slice(0, 10),
         end_date: new Date(spanEnd - dayMs).toISOString().slice(0, 10),
-        phases: rows.map(({ phase, start, end }) => ({
+        phases: rows.filter(({ start, end }) => end > spanStart && start < spanEnd).map(({ phase, start, end }) => ({
           name: String(phase.name || "Training block"),
           start_date: phase.start_date,
           end_date: phase.end_date,
           ...range(start, end)
         })),
         selection: range(weekStart, weekEnd),
-        marker: spanStart <= marker && marker < spanEnd
+        marker: hasWeek && spanStart <= marker && marker < spanEnd
           ? { left: percent(marker), date: markerDate, label: markerDate === today ? "Today" : "Selected day" } : null,
         today_marker: todayMarker,
         months
       };
     }
 
-    function renderSeasonHorizon(currentWeek) {
-      const layout = seasonHorizonLayout(DATA.phases, currentWeek, state.selectedDate, TODAY);
+    function seasonRaceMarkers(events, layout) {
+      const dayMs = 86400000;
+      const start = Date.parse(`${layout.start_date}T00:00:00Z`);
+      const end = Date.parse(`${layout.end_date}T00:00:00Z`) + dayMs;
+      const dates = new Map();
+      const seen = new Set();
+      for (const event of Array.isArray(events) ? events : []) {
+        const date = String(event?.date || "");
+        if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(date) || eventIsSkipped(event)) continue;
+        const time = Date.parse(`${date}T00:00:00Z`);
+        if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== date || time < start || time >= end) continue;
+        const name = String(event.name || "Unnamed event");
+        const key = JSON.stringify([date, String(event.id || name), String(event.discipline || "")]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const status = String(event.status || "").toLowerCase();
+        const tentative = event.markers?.maybe === true || ["maybe", "tentative"].includes(status)
+          || !(event.markers?.commitment === true || ["confirmed", "committed"].includes(status));
+        const detail = `${name}${event.discipline ? ` · ${event.discipline}` : ""}${event.priority ? ` · ${event.priority} priority` : ""}${tentative ? " · tentative" : ""}`;
+        if (!dates.has(date)) dates.set(date, { date, left: 100 * (time - start) / (end - start), names: [], details: [], tentative: true });
+        const group = dates.get(date);
+        group.names.push(name);
+        group.details.push(detail);
+        group.tentative = group.tentative && tentative;
+      }
+      const occupied = [];
+      return [...dates.values()].sort((left, right) => left.date.localeCompare(right.date)).map((group) => {
+        let row = occupied.findIndex((last) => group.left - last >= 2.2);
+        if (row < 0) row = occupied.length < 4 ? occupied.length : occupied.indexOf(Math.min(...occupied));
+        occupied[row] = group.left;
+        return { ...group, row, label: group.names.join(" / "), description: `${dayLabel(group.date)} · ${group.details.join("; ")}` };
+      });
+    }
+
+    function renderSeasonHorizon(currentWeek, options = {}) {
+      const full = options.scope === "calendar";
+      const scope = full ? "calendar" : "current";
+      const year = /^[0-9]{4}$/.test(String(options.year || "")) ? String(options.year) : TODAY.slice(0, 4);
+      const domain = full ? { start_date: `${year}-01-01`, end_date: `${year}-12-31` } : null;
+      const layout = seasonHorizonLayout(DATA.phases, currentWeek, state.selectedDate, TODAY, domain);
       if (!layout) return "";
       const loadSeries = seasonLoadSeries(DATA.weeks, layout, TODAY);
-      const selectedLoad = loadSeries.rows.find((row) => row.start_date === currentWeek.start_date);
+      const provenance = seasonLoadProvenance(loadSeries);
+      const selectedLoad = loadSeries.rows.find((row) => row.start_date === currentWeek?.start_date);
       const loadSummary = seasonWeekLoadLabel(selectedLoad);
-      const events = DATA.days
-        .flatMap((day) => (day.events || []).filter((event) => !eventIsSkipped(event)).map((event) => ({ day, event })))
-        .filter(({ day }) => day.date >= currentWeek.start_date)
-        .slice(0, 7);
-      const arcLabel = `${currentWeek.phase || layout.phases[0].name || "Season"} → ${layout.phases.at(-1).name || "Plan"}`;
-      const shownWeek = `${dayLabel(currentWeek.start_date)}–${dayLabel(currentWeek.end_date)}`;
-      const selectedDescription = `${shownWeek} · ${currentWeek.phase || "Training block"}`;
+      const eventRows = Array.isArray(DATA.events) ? DATA.events
+        : (DATA.days || []).flatMap((day) => (day.events || []).map((event) => ({ ...event, date: event.date || day.date })));
+      const races = seasonRaceMarkers(eventRows, layout).map((event) => {
+        const selectable = Boolean(dayByDate(event.date));
+        return { ...event, selectable, description: `${event.description}${selectable ? "" : " · No loaded day for this event"}` };
+      });
+      const upcoming = races.filter((event) => event.date >= (currentWeek?.start_date || TODAY)).slice(0, 3);
+      const arcLabel = full ? `${year} training load`
+        : `${currentWeek?.phase || layout.phases[0]?.name || "Season"} → ${layout.phases.at(-1)?.name || "Plan"}`;
+      const shownWeek = currentWeek ? `${dayLabel(currentWeek.start_date)}–${dayLabel(currentWeek.end_date)}` : "None selected";
+      const selectedDescription = currentWeek
+        ? `${shownWeek} · ${currentWeek.phase || "Training block"}${layout.selection.width > 0 ? "" : " · outside displayed season"}` : "No week selected";
+      const selectedPhase = layout.selection.width > 0
+        ? currentWeek?.phase || layout.phases.find((phase) => phase.start_date <= state.selectedDate && state.selectedDate <= phase.end_date)?.name || "" : "";
       const todayAnchor = todayAnchorDate();
       const canJumpToday = Boolean(dayByDate(todayAnchor));
       const todayDescription = todayAnchor === TODAY
         ? `Jump to today · ${dayLabel(TODAY)}`
         : `Today is ${dayLabel(TODAY)}; jump to the ${todayAnchor < TODAY ? "latest" : "next"} available day · ${dayLabel(todayAnchor)}`;
-      const horizonWeeks = DATA.weeks.filter((week) => week.end_date >= layout.start_date && week.start_date <= layout.end_date);
-      const selectedIndex = Math.max(0, horizonWeeks.findIndex((week) => week.start_date === currentWeek.start_date));
+      const horizonWeeks = (DATA.weeks || []).filter((week) => week.end_date >= layout.start_date && week.start_date <= layout.end_date);
+      const selectedIndex = Math.max(0, horizonWeeks.findIndex((week) => week.start_date === currentWeek?.start_date));
+      const summaryId = `season-load-summary-${scope}`;
+      const raceButton = (event, prefix) => `<button type="button" class="season-race" data-season-date="${escapeHtml(event.date)}" data-season-focus="${prefix}-${escapeHtml(event.date)}" title="${escapeHtml(event.description)}"${event.selectable ? "" : " disabled"}><span>${escapeHtml(dayLabel(event.date))}${event.tentative ? " · tentative" : ""}${event.selectable ? "" : " · no loaded day"}</span><strong>${escapeHtml(event.label)}</strong></button>`;
       return `
-        <section class="season-horizon" aria-label="Season horizon" data-season-jump="current" data-season-start="${escapeHtml(layout.start_date)}" data-season-end="${escapeHtml(layout.end_date)}">
+        <section class="season-horizon${full ? " season-overview-horizon" : ""}" aria-label="${full ? "Season training load" : "Season horizon"}" data-season-jump="${scope}" data-season-start="${escapeHtml(layout.start_date)}" data-season-end="${escapeHtml(layout.end_date)}">
           <div class="season-horizon-head">
             <div>
               <p class="eyebrow">Season plan</p>
               <strong>${escapeHtml(arcLabel)}</strong>
+              ${full ? `<p class="season-overview-copy">${escapeHtml(provenance.note)} Boundary points retain their whole-week totals.</p>` : ""}
             </div>
             <div class="season-horizon-races">
-              ${events.slice(0, 3).map(({ day, event }) => `
-                <button type="button" class="season-race" data-season-date="${escapeHtml(day.date)}">
-                  <span>${escapeHtml(dayLabel(day.date))}</span>
-                  <strong>${escapeHtml(event.name || "Race")}</strong>
-                </button>`).join("")}
+              ${upcoming.map((event) => raceButton(event, "upcoming")).join("")}
             </div>
           </div>
+          ${full ? `<p class="season-overview-stats"><span><strong>${provenance.source}</strong> source-target weeks</span><span><strong>${provenance.forecast}</strong> forecast weeks</span><span><strong>${provenance.recorded}</strong> recorded weeks${provenance.incomplete ? ` · ${provenance.incomplete} incomplete` : ""}</span></p>` : ""}
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <div class="season-chart-key"><strong>Weekly TSS</strong><span><i aria-hidden="true"></i>Planned range / forecast</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded load</span></div>
+              <div class="season-chart-key"><strong>Weekly TSS</strong><span class="trajectory-key"><i aria-hidden="true"></i>Planned estimate</span><span><i aria-hidden="true"></i>Planned range / forecast</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded load</span></div>
               <div class="season-track-actions">
                 <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
-                <button type="button" class="season-today-button" data-season-today aria-label="${escapeHtml(todayDescription)}" title="${escapeHtml(todayDescription)}"${canJumpToday ? "" : " disabled"}><i aria-hidden="true"></i>Today</button>
+                <button type="button" class="season-today-button" data-season-today data-season-focus="today" aria-label="${escapeHtml(todayDescription)}" title="${escapeHtml(todayDescription)}"${canJumpToday ? "" : " disabled"}><i aria-hidden="true"></i>Today</button>
+                ${full ? `<button type="button" class="season-open-week" data-season-open-week data-season-focus="open"${currentWeek ? "" : " disabled"}>Open week ↗</button>` : ""}
               </div>
             </div>
-            <div class="season-track" data-season-track role="slider" tabindex="0" aria-label="Select week from season horizon" aria-describedby="season-load-summary" aria-valuemin="0" aria-valuemax="${Math.max(0, horizonWeeks.length - 1)}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}">
+            <div class="season-track" ${horizonWeeks.length ? `data-season-track data-season-focus="track" role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${horizonWeeks.length - 1}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}"` : 'role="img" aria-label="Season TSS chart"'} aria-describedby="${summaryId}">
               ${renderSeasonLoadChart(loadSeries)}
               ${layout.phases.map((phase) => {
                 const label = `${phase.name} · ${dayLabel(phase.start_date)}–${dayLabel(phase.end_date)}`;
@@ -10159,7 +10330,9 @@ HTML_TEMPLATE = """<!doctype html>
             <div class="season-months">
               ${layout.months.map((month) => `<span style="left:${month.left}%; width:${month.width}%">${escapeHtml(utcDate(month.date).toLocaleString(undefined, { month: "short", timeZone: "UTC" }))}</span>`).join("")}
             </div>
-            <p class="season-load-readout" id="season-load-summary">${escapeHtml(loadSummary)} · Select a week for details</p>
+            ${full && races.length ? `<div class="season-event-track" aria-label="Race and event dates" style="height:${23 + 18 * Math.max(...races.map((event) => event.row))}px">${races.map((event) => `<button type="button" class="season-event-marker${event.tentative ? " tentative" : ""}" data-season-race-marker data-season-date="${escapeHtml(event.date)}" data-season-focus="race-${escapeHtml(event.date)}" aria-label="${escapeHtml(event.description)}" title="${escapeHtml(event.description)}" style="left:${event.left}%; --event-row:${event.row}"${event.selectable ? "" : " disabled"}></button>`).join("")}</div>` : ""}
+            <p class="season-load-readout" id="${summaryId}" aria-live="polite">${full && selectedPhase ? `<span data-season-phase-readout>Phase: ${escapeHtml(selectedPhase)} · </span>` : ""}${escapeHtml(loadSummary)}${horizonWeeks.length ? ` · Select a week for details${full ? "; Enter opens Week" : ""}` : ""}</p>
+            ${full && races.length ? `<details class="season-event-list"><summary>${races.reduce((count, event) => count + event.names.length, 0)} races and events in ${escapeHtml(year)}</summary><div>${races.map((event) => raceButton(event, "event")).join("")}</div></details>` : ""}
           </div>
         </section>`;
     }
@@ -10177,11 +10350,15 @@ HTML_TEMPLATE = """<!doctype html>
         if (week && !(week.start_date <= state.selectedDate && state.selectedDate <= week.end_date)) {
           state.selectedDate = week.start_date;
         }
+        state.calendarYear = state.selectedDate.slice(0, 4);
+        renderCalendarYearSelect();
+        renderCalendar();
         renderWeek();
         renderCoachRail();
         renderTodayDashboard();
         renderMonthRail();
         renderRideSidebar();
+        syncNavigationUrl();
       });
       document.getElementById("previous-week").addEventListener("click", () => moveWeek(-1));
       document.getElementById("next-week").addEventListener("click", () => moveWeek(1));
@@ -10199,11 +10376,15 @@ HTML_TEMPLATE = """<!doctype html>
       if (!week) return;
       state.selectedWeekStart = week.start_date;
       state.selectedDate = week.start_date;
+      state.calendarYear = state.selectedDate.slice(0, 4);
+      renderCalendarYearSelect();
+      renderCalendar();
       renderWeek();
       renderCoachRail();
       renderTodayDashboard();
       renderMonthRail();
       renderRideSidebar();
+      syncNavigationUrl();
     }
 
     function updateWeekNavButtons() {
@@ -10219,9 +10400,8 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function renderWeek() {
-      const active = document.activeElement;
-      const horizonFocus = active?.hasAttribute("data-season-today") ? "[data-season-today]"
-        : active?.hasAttribute("data-season-track") ? "[data-season-track]" : null;
+      const weekRoot = document.getElementById("week-list");
+      const horizonFocus = seasonFocusKey(weekRoot);
       const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || DATA.weeks[0];
       if (!week) {
         const rider = String(DATA.athlete?.display_name || "Your").trim();
@@ -10347,24 +10527,33 @@ HTML_TEMPLATE = """<!doctype html>
         </article>`;
       bindWeekCards();
       bindSeasonHorizon();
-      const focusTarget = horizonFocus ? document.querySelector(horizonFocus) : null;
-      if (focusTarget && !focusTarget.disabled) focusTarget.focus({ preventScroll: true });
+      restoreSeasonFocus(weekRoot, horizonFocus);
       requestAnimationFrame(syncWeekIntervalLists);
     }
 
-    function bindSeasonHorizon() {
-      const horizon = document.querySelector("[data-season-jump='current']");
+    function bindSeasonHorizon(horizon = document.querySelector("#week-list [data-season-jump='current']")) {
       if (!horizon) return;
+      const scope = horizon.dataset.seasonJump === "calendar" ? "calendar" : "current";
+      const currentHorizon = () => document.querySelector(`[data-season-jump="${scope}"]`);
+      const focus = (key) => restoreSeasonFocus(currentHorizon(), key);
+      const openWeek = () => {
+        if (!DATA.weeks.some((week) => week.start_date === state.selectedWeekStart)) return;
+        renderWeek();
+        setView("weeks");
+        restoreSeasonFocus(document.getElementById("week-list"), "track");
+      };
       horizon.querySelector("[data-season-today]")?.addEventListener("click", () => {
         refreshCurrentDate();
         const anchor = todayAnchorDate();
         if (!dayByDate(anchor)) return;
         selectDate(anchor, { switchWeek: true });
-        document.querySelector("[data-season-today]")?.focus({ preventScroll: true });
+        focus("today");
       });
+      horizon.querySelector("[data-season-open-week]")?.addEventListener("click", openWeek);
       horizon.querySelectorAll("[data-season-date]").forEach((button) => {
         button.addEventListener("click", () => {
-          selectDate(button.dataset.seasonDate, { switchWeek: true, openRide: true });
+          selectDate(button.dataset.seasonDate, { switchWeek: true, openRide: scope === "current" });
+          focus(button.dataset.seasonFocus);
         });
       });
       const track = horizon.querySelector("[data-season-track]");
@@ -10372,17 +10561,18 @@ HTML_TEMPLATE = """<!doctype html>
       const horizonWeeks = DATA.weeks.filter((week) =>
         week.end_date >= horizon.dataset.seasonStart && week.start_date <= horizon.dataset.seasonEnd
       );
-      const weeks = horizonWeeks.length ? horizonWeeks : DATA.weeks;
+      const weeks = horizonWeeks;
       const showWeek = (week, target = week?.start_date, restoreFocus = false) => {
         if (!week) return;
+        const first = week.start_date > horizon.dataset.seasonStart ? week.start_date : horizon.dataset.seasonStart;
+        const last = week.end_date < horizon.dataset.seasonEnd ? week.end_date : horizon.dataset.seasonEnd;
+        const candidate = target >= first && target <= last ? target : first;
+        const selected = dayByDate(candidate) ? candidate
+          : (DATA.days || []).find((day) => first <= day.date && day.date <= last)?.date;
+        if (!selected) return;
         state.selectedWeekStart = week.start_date;
-        state.selectedDate = dayByDate(target) ? target : week.start_date;
-        renderWeek();
-        renderCoachRail();
-        renderTodayDashboard();
-        renderMonthRail();
-        renderRideSidebar();
-        if (restoreFocus) document.querySelector("[data-season-track]")?.focus({ preventScroll: true });
+        selectDate(selected, { switchWeek: false });
+        if (restoreFocus) focus("track");
       };
       track.addEventListener("click", (event) => {
         const rect = track.getBoundingClientRect();
@@ -10404,6 +10594,11 @@ HTML_TEMPLATE = """<!doctype html>
         showWeek(week, target);
       });
       track.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && scope === "calendar") {
+          event.preventDefault();
+          openWeek();
+          return;
+        }
         let index = Math.max(0, weeks.findIndex((week) => week.start_date === state.selectedWeekStart));
         if (event.key === "ArrowLeft" || event.key === "ArrowDown") index -= 1;
         else if (event.key === "ArrowRight" || event.key === "ArrowUp") index += 1;
@@ -10958,6 +11153,7 @@ HTML_TEMPLATE = """<!doctype html>
       if (options.scroll) {
         requestAnimationFrame(() => scrollToDate(value));
       }
+      syncNavigationUrl();
     }
 
     function scrollToDate(value) {
@@ -11205,6 +11401,7 @@ HTML_TEMPLATE = """<!doctype html>
       document.getElementById("calendar-year-select").addEventListener("change", (event) => {
         state.calendarYear = event.currentTarget.value;
         renderCalendar();
+        syncNavigationUrl();
       });
     }
 
@@ -11348,19 +11545,17 @@ def _event_kind(events: list[dict[str, Any]], plan_text: str) -> str:
 
 
 def _normalize_plan_text(text: str) -> str:
-    return (
-        str(text or "")
-        .replace("–", "-")
-        .replace("—", "-")
-        .replace("×", "x")
-    )
+    normalized = str(text or "").replace("–", "-").replace("—", "-").replace("×", "x")
+    return re.sub(r"\b(ride|workout|session)(?=\d)", r"\1 ", normalized, flags=re.IGNORECASE)
 
 
 def _strip_interval_durations(text: str) -> str:
     text = _normalize_plan_text(text)
     # Remove rep prescriptions so 4x3min does not become a 3-minute ride.
     return re.sub(
-        r"\b\d+(?:\.\d+)?\s*x\s*\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*(?:sec|secs|second|seconds|s|min|mins|minute|minutes|m)?\b",
+        r"\b\d+(?:\.\d+)?\s*x\s*\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*"
+        r"(?:(?:hours?|hrs?|h)(?:\s*(?:and\s+)?\d+(?:\.\d+)?\s*(?:minutes?|mins?|m))?"
+        r"|seconds?|secs?|s|minutes?|mins?|m)?\b",
         " ",
         text,
         flags=re.IGNORECASE,
@@ -11416,27 +11611,60 @@ def _extract_planned_hour_range(
             )
         )
 
+    number = r"\d+(?:\.\d+)?"
+    hour_unit = r"(?:hours?|hrs?|h)"
+    minute_unit = r"(?:minutes?|mins?|m)"
+    atom = rf"{number}\s*(?:{hour_unit}(?:\s*(?:and\s+)?{number}\s*{minute_unit})?|{minute_unit})\b"
+
+    def atom_hours(value: str) -> float | None:
+        hours = re.fullmatch(
+            rf"({number})\s*{hour_unit}(?:\s*(?:and\s+)?({number})\s*{minute_unit})?",
+            value,
+            re.IGNORECASE,
+        )
+        if hours:
+            minutes = float(hours.group(2) or 0)
+            result = float(hours.group(1)) + minutes / 60
+            return result if minutes < 60 and result <= MAX_DAILY_HOURS else None
+        minutes = re.fullmatch(rf"({number})\s*{minute_unit}", value, re.IGNORECASE)
+        result = float(minutes.group(1)) / 60 if minutes else None
+        return result if result is not None and result <= MAX_DAILY_HOURS else None
+
+    def blank(match: re.Match[str]) -> str:
+        return " " * len(match.group())
+
+    # Consume compound/repeated-unit ranges before individual durations so
+    # "1h30min-2h" cannot become a 30-minute or two-hour exact prescription.
+    repeated_range = re.compile(rf"(?<![\w.+-])({atom})\s*(?:-|to)\s*({atom})", re.IGNORECASE)
+    for match in repeated_range.finditer(text):
+        start, end = atom_hours(match.group(1)), atom_hours(match.group(2))
+        if start is None or end is None or end < start:
+            return None, None
+        if whole_session(match, text):
+            ranges.append((start, end))
+    remaining = repeated_range.sub(blank, text)
+
     range_pattern = re.compile(
-        r"(?<![\w.+-])(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|min|mins|minute|minutes)\b",
+        rf"(?<![\w.+-])({number})\s*(?:-|to)\s*({number})\s*({hour_unit}|{minute_unit})\b",
         re.IGNORECASE,
     )
-    for match in range_pattern.finditer(text):
-        if not whole_session(match, text):
-            continue
+    for match in range_pattern.finditer(remaining):
         start = _duration_to_hours(float(match.group(1)), match.group(3))
         end = _duration_to_hours(float(match.group(2)), match.group(3))
-        ranges.append((min(start, end), max(start, end)))
-
-    single_pattern = re.compile(
-        r"(?<![\w.+-])(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|min|mins|minute|minutes)\b",
-        re.IGNORECASE,
-    )
-    singles_text = range_pattern.sub(" ", text)
-    for match in single_pattern.finditer(singles_text):
-        if not whole_session(match, singles_text):
-            continue
-        hours = _duration_to_hours(float(match.group(1)), match.group(2))
-        ranges.append((hours, hours))
+        if end < start or end > MAX_DAILY_HOURS:
+            return None, None
+        if whole_session(match, remaining):
+            ranges.append((start, end))
+    remaining = range_pattern.sub(blank, remaining)
+    if re.search(rf"(?<![\w.])[+-]\s*{atom}", remaining, re.IGNORECASE):
+        return None, None
+    single_pattern = re.compile(rf"(?<![\w.+-]){atom}", re.IGNORECASE)
+    for match in single_pattern.finditer(remaining):
+        hours = atom_hours(match.group())
+        if hours is None:
+            return None, None
+        if whole_session(match, remaining):
+            ranges.append((hours, hours))
 
     if not ranges:
         return None, None
@@ -11905,8 +12133,13 @@ def _activity_load_display(activity: dict[str, Any]) -> dict[str, Any]:
     )
     coverage_label = _power_coverage_label(coverage, partial=partial) if partial else ""
     if partial:
+        duration_basis = (
+            "device timer time"
+            if estimate.get("reported_duration_source") == "timer_time"
+            else "reported moving time"
+        )
         coverage_text = (
-            f"Recorded power duration is {coverage_label.removesuffix(' power coverage')} of reported moving time. "
+            f"Recorded power duration is {coverage_label.removesuffix(' power coverage')} of {duration_basis}. "
             if coverage is not None and math.isfinite(coverage) and 0 <= coverage <= 1
             else "Some recorded power is missing. "
         )
@@ -11964,7 +12197,8 @@ def _totals_load_display(totals: dict[str, Any]) -> dict[str, Any]:
     ]
     if partial_streams > 0:
         descriptions.append(
-            f"{coverage_label}, measured as recorded power duration relative to reported moving time."
+            f"{coverage_label}, measured as recorded power duration relative to reported activity duration "
+            "(device timer time when available, otherwise moving time)."
             if coverage_label
             else "Some recorded power is missing."
         )

@@ -136,7 +136,7 @@ class PowerMetricsTest(unittest.TestCase):
 
         estimate = {
             "estimated_normalized_power_w": 200.0,
-            "method": "power_stream_30s_v2",
+            "method": "power_stream_30s_v3",
             "observed_duration_s": 600,
             "rolling_window_duration_s": 571,
             "gap_limit_s": 5,
@@ -236,7 +236,7 @@ class PowerMetricsTest(unittest.TestCase):
                     "sport_type": "Ride",
                     "moving_time_s": moving,
                     "power_load_estimate": {
-                        "method": "power_stream_30s_v2",
+                        "method": "power_stream_30s_v3",
                         "estimated_normalized_power_w": 200,
                         "observed_duration_s": observed,
                         "rolling_window_duration_s": observed - 29,

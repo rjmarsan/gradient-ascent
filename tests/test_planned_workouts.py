@@ -43,6 +43,57 @@ class PlannedWorkoutsTest(unittest.TestCase):
 
         return load_planned_workouts(self.root, **options)
 
+    def test_structured_only_reader_ignores_unrelated_invalid_calendar_sources(self):
+        from gradient_ascent.planned_workouts import load_structured_workouts
+
+        self.write("weeks.json", [{"start_date": "not-a-date", "days": {}}])
+        self.write("events.json", {"invalid": "legacy event shape"})
+        self.write("workouts.json", {"version": 1, "workouts": []})
+        self.assertEqual(load_structured_workouts(self.root), [])
+        self.write("workouts.json", {"version": 1, "workouts": [workout()]})
+        before = (self.root / "plan/workouts.json").read_bytes()
+        entries = load_structured_workouts(self.root)
+        self.assertEqual([entry["id"] for entry in entries], ["tempo-session"])
+        self.assertEqual(entries[0]["source"], "plan/workouts.json")
+        self.assertEqual(entries[0]["status"], "confirmed")
+        self.assertEqual(load_structured_workouts(self.root, end=date(2026, 8, 17)), [])
+        self.assertEqual((self.root / "plan/workouts.json").read_bytes(), before)
+        with self.assertRaises(ValueError):
+            self.load()
+
+    def test_structured_only_reader_keeps_schema_duplicate_and_path_guards(self):
+        from gradient_ascent.planned_workouts import load_structured_workouts
+
+        self.write("workouts.json", {"version": True, "workouts": []})
+        with self.assertRaises(ValueError):
+            load_structured_workouts(self.root)
+        self.write("workouts.json", {"version": 1, "workouts": [workout(), workout()]})
+        with self.assertRaises(ValueError):
+            load_structured_workouts(self.root, start=date(2027, 1, 1))
+        self.write("workouts.json", {"version": 1, "workouts": [workout(steps=[])]})
+        with self.assertRaises(ValueError):
+            load_structured_workouts(self.root)
+        with self.assertRaises(ValueError):
+            load_structured_workouts(self.root, start="2026-08-17")
+        outside = self.root / "outside.json"
+        outside.write_text(json.dumps({"version": 1, "workouts": []}), encoding="utf-8")
+        linked = self.root / "plan/workouts.json"
+        linked.unlink()
+        linked.symlink_to(outside)
+        with self.assertRaises(ValueError):
+            load_structured_workouts(self.root)
+
+    def test_combined_reader_still_rejects_cross_source_id_collisions(self):
+        from gradient_ascent.planned_workouts import load_structured_workouts
+
+        self.write("weeks.json", [{"start_date": "2026-08-17", "days": {"Mon": "Rest"}}])
+        self.write("workouts.json", {
+            "version": 1, "workouts": [workout(id="week-2026-08-17-mon")],
+        })
+        self.assertEqual(len(load_structured_workouts(self.root)), 1)
+        with self.assertRaises(ValueError):
+            self.load()
+
     def test_legacy_prose_stays_unstructured_and_explicit_entries_remain_independent(self):
         self.write(
             "weeks.json",

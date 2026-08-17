@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .planned_load import MAX_DAILY_HOURS, MAX_DAILY_TSS, MAX_WEEKLY_HOURS, MAX_WEEKLY_TSS, parse_source_range
 from .spreadsheet import iter_sheet_rows
 from .storage import read_json, write_json
 
@@ -56,6 +57,7 @@ class WeekRow:
     plan: Dict[str, Any]
     actual: Optional[Dict[str, Any]]
     events: List[str]
+    day_loads: Dict[str, Dict[str, Optional[float]]] = dataclass_field(default_factory=dict)
 
 
 def _unique_headers(headers: List[str]) -> List[str]:
@@ -103,20 +105,7 @@ def _slug(value: str) -> str:
 
 
 def _parse_hours_target(value: str | None) -> Tuple[Optional[float], Optional[float]]:
-    if not value:
-        return None, None
-    cleaned = value.lower()
-    cleaned = cleaned.replace("hours", "").replace("hour", "")
-    cleaned = cleaned.replace("hrs", "").replace("hr", "")
-    cleaned = cleaned.replace("h", "")
-    cleaned = cleaned.replace("–", "-").replace("—", "-")
-    numbers = re.findall(r"\d+(?:\.\d+)?", cleaned)
-    if not numbers:
-        return None, None
-    if len(numbers) == 1:
-        num = float(numbers[0])
-        return num, num
-    return float(numbers[0]), float(numbers[1])
+    return parse_source_range(value, unit="hours", maximum=MAX_WEEKLY_HOURS)
 
 
 def _first_value(data: Dict[str, Any], *keys: str) -> Any:
@@ -165,7 +154,8 @@ def _daily_plan_rows(
     if not date_column or not workout_column:
         return None
 
-    duration_column = _column_name(headers, "Duration", "Planned Duration", "Duration (min)")
+    duration_column = _column_name(headers, "Duration", "Planned Duration", "Duration (min)", "Duration (hours)")
+    tss_column = _column_name(headers, "Planned TSS", "TSS Planned", "TSS Target", "Training Stress Score Planned")
     phase_column = _column_name(headers, "Phase", "Training Phase")
     focus_column = _column_name(headers, "Focus", "Primary Focus")
     notes_column = _column_name(headers, "Notes", "Description")
@@ -207,6 +197,14 @@ def _daily_plan_rows(
             week.plan["Primary Focus"] = data.get(focus_column, "")
 
         duration = data.get(duration_column, "").strip() if duration_column else ""
+        duration_unit = "minutes" if duration_column and duration_column.lower() == "duration (min)" else "hours" if duration_column and duration_column.lower() == "duration (hours)" else "duration"
+        hours_min, hours_max = parse_source_range(duration, unit=duration_unit, maximum=MAX_DAILY_HOURS)
+        tss_min, tss_max = parse_source_range(data.get(tss_column, "") if tss_column else "", unit="tss", maximum=MAX_DAILY_TSS)
+        if duration and hours_min is not None and not re.search(r"[a-z:]", duration, re.IGNORECASE):
+            if duration_unit == "minutes":
+                duration += " min"
+            elif duration_unit == "hours":
+                duration += " h"
         notes = data.get(notes_column, "").strip() if notes_column else ""
         description = f"{workout} ({duration})" if duration else workout
         if notes and notes != workout:
@@ -214,6 +212,17 @@ def _daily_plan_rows(
         weekday = WEEKDAYS[workout_day.weekday()]
         existing = str(week.plan.get(weekday) or "").strip()
         week.plan[weekday] = f"{existing}\n{description}".strip()
+        incoming = {"hours_min": hours_min, "hours_max": hours_max, "tss_min": tss_min, "tss_max": tss_max}
+        previous = week.day_loads.get(weekday)
+        if previous is not None:
+            for metric, maximum in (("hours", MAX_DAILY_HOURS), ("tss", MAX_DAILY_TSS)):
+                keys = (f"{metric}_min", f"{metric}_max")
+                values = [previous.get(key) for key in keys] + [incoming[key] for key in keys]
+                if all(value is not None for value in values) and values[1] + values[3] <= maximum:
+                    incoming[keys[0]], incoming[keys[1]] = values[0] + values[2], values[1] + values[3]
+                else:
+                    incoming[keys[0]] = incoming[keys[1]] = None
+        week.day_loads[weekday] = incoming
 
     return [weeks_by_start[key] for key in sorted(weeks_by_start)]
 
@@ -402,6 +411,8 @@ def build_plan_from_csv(csv_path: Path, output_dir: Path) -> Dict[str, Any]:
         hours_min, hours_max = _parse_hours_target(
             (week.plan or {}).get("Hours Target")
         )
+        tss_column = _column_name(list(week.plan), "TSS Target", "Planned TSS", "Weekly TSS", "Target TSS")
+        tss_min, tss_max = parse_source_range(week.plan.get(tss_column) if tss_column else None, unit="tss", maximum=MAX_WEEKLY_TSS)
         week_entries.append(
             {
                 "id": week.start_date,
@@ -411,6 +422,8 @@ def build_plan_from_csv(csv_path: Path, output_dir: Path) -> Dict[str, Any]:
                 "phase": week.plan.get("Phase"),
                 "primary_focus": week.plan.get("Primary Focus"),
                 "hours_target": {"min": hours_min, "max": hours_max},
+                "tss_target": {"min": tss_min, "max": tss_max},
+                "day_loads": week.day_loads,
                 "hours_actual_text": (week.actual or {}).get("Hours actual")
                 or week.plan.get("Hours actual"),
                 "days": {

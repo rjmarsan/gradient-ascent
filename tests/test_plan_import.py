@@ -8,6 +8,52 @@ from gradient_ascent.plan import build_plan_from_csv
 
 
 class PlanImportTest(unittest.TestCase):
+    def test_daily_import_preserves_numeric_minutes_and_explicit_load_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "daily.csv"
+            source.write_text(
+                "Date,Workout,Duration (min),Planned TSS\n"
+                "2026-09-01,First session,60,40-50\n"
+                "2026-09-01,Second session,30,20\n"
+                "2026-09-02,Rest,0,0\n"
+                "2026-09-03,Unknown,,\n"
+                "2026-09-03,Known component,30,25\n"
+                "2026-09-04,Large range,600-1200,100\n"
+                "2026-09-04,Exceeds day,600,100\n",
+                encoding="utf-8",
+            )
+            build_plan_from_csv(source, root / "plan")
+            week = json.loads((root / "plan/weeks.json").read_text())[0]
+        self.assertIn("60 min", week["days"]["Tue"])
+        self.assertEqual(week["day_loads"]["Tue"], {
+            "hours_min": 1.5, "hours_max": 1.5, "tss_min": 60.0, "tss_max": 70.0,
+        })
+        self.assertEqual(week["day_loads"]["Wed"], {
+            "hours_min": 0.0, "hours_max": 0.0, "tss_min": 0.0, "tss_max": 0.0,
+        })
+        self.assertEqual(week["day_loads"]["Thu"], {
+            "hours_min": None, "hours_max": None, "tss_min": None, "tss_max": None,
+        })
+        self.assertIsNone(week["day_loads"]["Fri"]["hours_min"])
+        self.assertIsNone(week["day_loads"]["Fri"]["hours_max"])
+
+    def test_weekly_import_preserves_explicit_tss_target_and_rejects_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "weekly.csv"
+            source.write_text(
+                "Week,Hours Target,TSS Target,Mon\n"
+                "2026-09-07 – 2026-09-13,5h-7h,300-450,Rest\n"
+                "2026-09-14 – 2026-09-20,4h,-20,Rest\n",
+                encoding="utf-8",
+            )
+            build_plan_from_csv(source, root / "plan")
+            weeks = json.loads((root / "plan/weeks.json").read_text())
+        self.assertEqual(weeks[0]["tss_target"], {"min": 300.0, "max": 450.0})
+        self.assertEqual(weeks[0]["hours_target"], {"min": 5.0, "max": 7.0})
+        self.assertEqual(weeks[1]["tss_target"], {"min": None, "max": None})
+
     def test_daily_workout_rows_are_grouped_into_weekly_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

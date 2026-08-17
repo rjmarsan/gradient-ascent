@@ -170,6 +170,172 @@ class PowerMetricsTest(unittest.TestCase):
             self.assertIsNone(_normalize_activity(base, invalid)["estimated_tss"])
         self.assertTrue(math.isfinite(derived["estimated_tss"]))
 
+    def test_missing_load_counts_only_positive_duration_cycling(self):
+        from gradient_ascent.insights import AggregateTotals
+
+        totals = AggregateTotals()
+        totals.add_activity(
+            {
+                "sport_type": "Ride",
+                "moving_time_s": 3600,
+                "estimated_tss": 75,
+                "estimated_tss_source": "source",
+            }
+        )
+        for row in (
+            {"sport_type": "Walk", "moving_time_s": 0},
+            {"sport_type": "Run", "moving_time_s": 1800},
+            {"sport_type": "Ride", "moving_time_s": 0},
+        ):
+            totals.add_activity(row)
+        complete = totals.finalize()
+        self.assertEqual(complete["estimated_tss"], 75)
+        self.assertEqual(complete["estimated_tss_relevant_activity_count"], 1)
+        self.assertEqual(complete["estimated_tss_missing_activity_count"], 0)
+        totals.add_activity(
+            {
+                "sport_type": "Run",
+                "moving_time_s": 1800,
+                "estimated_tss": 12,
+                "estimated_tss_source": "source",
+            }
+        )
+        totals.add_activity(
+            {
+                "sport_type": "Ride",
+                "moving_time_s": 0,
+                "estimated_tss": 2,
+                "estimated_tss_source": "source",
+            }
+        )
+        self.assertEqual(totals.finalize()["estimated_tss"], 89)
+        self.assertEqual(totals.finalize()["estimated_tss_missing_activity_count"], 0)
+        totals.add_activity({"sport_type": "EBikeRide", "moving_time_s": 900})
+        totals.add_activity({"sport_type": "Ride", "elapsed_time_s": 1200})
+        incomplete = totals.finalize()
+        self.assertEqual(incomplete["estimated_tss_relevant_activity_count"], 3)
+        self.assertEqual(incomplete["estimated_tss_missing_activity_count"], 2)
+        self.assertEqual(incomplete["estimated_tss"], 89)
+        totals.add_activity(
+            {
+                "sport_type": "EMountainBikeRide",
+                "moving_time_s": 600,
+                "estimated_tss": 0,
+                "estimated_tss_source": "source",
+            }
+        )
+        self.assertEqual(totals.finalize()["estimated_tss_relevant_activity_count"], 4)
+        self.assertEqual(totals.finalize()["estimated_tss_missing_activity_count"], 2)
+
+    def test_power_coverage_is_duration_weighted_and_does_not_guess_source_coverage(self):
+        from gradient_ascent.insights import AggregateTotals, _normalize_activity
+
+        def recording(observed, moving):
+            return _normalize_activity(
+                {
+                    "sport_type": "Ride",
+                    "moving_time_s": moving,
+                    "power_load_estimate": {
+                        "method": "power_stream_30s_v2",
+                        "estimated_normalized_power_w": 200,
+                        "observed_duration_s": observed,
+                        "rolling_window_duration_s": observed - 29,
+                        "gap_limit_s": 5,
+                    },
+                },
+                200,
+            )
+
+        totals = AggregateTotals()
+        totals.add_activity(recording(600, 900))
+        totals.add_activity(recording(2000, 1800))
+        source = {**recording(600, 900), "estimated_tss": 75, "estimated_tss_source": "source"}
+        totals.add_activity(source)
+        result = totals.finalize()
+        self.assertEqual(result["estimated_tss_missing_activity_count"], 0)
+        self.assertEqual(result["estimated_tss_power_stream_activity_count"], 2)
+        self.assertEqual(result["estimated_tss_partial_activity_count"], 1)
+        self.assertEqual(result["estimated_tss_relevant_partial_activity_count"], 1)
+        self.assertEqual(result["estimated_tss_power_observed_duration_s"], 2600)
+        self.assertEqual(result["estimated_tss_power_load_duration_s"], 2400)
+        self.assertEqual(result["estimated_tss_power_reported_duration_s"], 2700)
+        self.assertAlmostEqual(result["estimated_tss_power_coverage_ratio"], 2400 / 2700, places=6)
+        self.assertEqual(source["estimated_tss"], 75)
+        totals.add_activity({**recording(600, 900), "sport_type": "Run"})
+        with_noncycling = totals.finalize()
+        self.assertEqual(with_noncycling["estimated_tss_partial_activity_count"], 2)
+        self.assertEqual(with_noncycling["estimated_tss_relevant_partial_activity_count"], 1)
+        self.assertEqual(with_noncycling["estimated_tss_power_stream_activity_count"], 2)
+        self.assertEqual(
+            with_noncycling["estimated_tss_power_coverage_ratio"],
+            result["estimated_tss_power_coverage_ratio"],
+        )
+
+    def test_completeness_merge_and_empty_coverage_are_stable(self):
+        from gradient_ascent.insights import AggregateTotals
+
+        rows = [
+            {
+                "sport_type": "Ride",
+                "moving_time_s": 3600,
+                "estimated_tss": 75,
+                "estimated_tss_source": "source",
+            },
+            {
+                "sport_type": "Ride",
+                "moving_time_s": 900,
+                "estimated_tss": 16.7,
+                "estimated_tss_source": "estimated_power_stream",
+                "power_load_estimate": {
+                    "observed_duration_s": 600,
+                    "load_duration_s": 600,
+                    "coverage_ratio": 1,
+                    "scope": "recorded_power",
+                },
+            },
+            {"sport_type": "Ride", "moving_time_s": 600},
+            {"sport_type": "Walk", "moving_time_s": 0},
+        ]
+        all_rows, left, right = AggregateTotals(), AggregateTotals(), AggregateTotals()
+        self.assertIsNone(all_rows.finalize()["estimated_tss_power_coverage_ratio"])
+        for index, row in enumerate(rows):
+            all_rows.add_activity(row)
+            (left if index < 2 else right).add_activity(row)
+        left.merge(right)
+        self.assertEqual(left.finalize(), all_rows.finalize())
+        result = left.finalize()
+        self.assertEqual(result["activity_count"], 4)
+        self.assertEqual(result["estimated_tss_activity_count"], 2)
+        self.assertEqual(result["estimated_tss_missing_activity_count"], 1)
+        self.assertAlmostEqual(result["estimated_tss_power_coverage_ratio"], 2 / 3, places=6)
+
+    def test_invalid_scores_and_coverage_cannot_make_totals_nonfinite(self):
+        from gradient_ascent.insights import AggregateTotals
+
+        totals = AggregateTotals()
+        for invalid in (float("nan"), float("inf"), -1, True):
+            totals.add_activity(
+                {"sport_type": "Ride", "moving_time_s": 600, "estimated_tss": invalid}
+            )
+        totals.add_activity(
+            {
+                "sport_type": "Ride",
+                "moving_time_s": 900,
+                "estimated_tss": 10,
+                "estimated_tss_source": "estimated_power_stream",
+                "power_load_estimate": {
+                    "observed_duration_s": float("inf"),
+                    "load_duration_s": 600,
+                    "scope": "recorded_power",
+                },
+            }
+        )
+        result = totals.finalize()
+        self.assertEqual(result["estimated_tss"], 10)
+        self.assertEqual(result["estimated_tss_missing_activity_count"], 4)
+        self.assertIsNone(result["estimated_tss_power_coverage_ratio"])
+        json.dumps(result, allow_nan=False)
+
     def test_rwgps_source_identity_is_forwarded_without_raw_provider_metadata(self):
         from gradient_ascent.insights import _normalize_activity
 

@@ -214,7 +214,10 @@ Opening the dashboard or checking `ride status` does not initiate a sync.
 
 Source-reported training load takes priority. When suitable recorded power and FTP
 are available, refresh can calculate clearly labeled NP/TSS estimates; incomplete
-coverage stays partial, and unsupported load stays missing. Generated ride titles
+power coverage and rides without load are identified, and unsupported load stays
+missing. The season chart compares scheduled weekly-hour ranges with recorded
+moving hours. Scheduled TSS uses imported targets first, then clearly labeled
+planning forecasts when enough information is available. Generated ride titles
 can use a planned-workout name for display without claiming the workout was followed.
 See [training load and ride labels](docs/training-load.md) for the calculation and limits.
 

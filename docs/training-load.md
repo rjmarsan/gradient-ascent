@@ -22,12 +22,70 @@ from the score originally shown by your device or TrainingPeaks. See TrainingPea
 [NP explanation](https://help.trainingpeaks.com/hc/en-us/articles/204071804-Normalized-Power)
 and [TSS definition](https://www.trainingpeaks.com/learn/articles/estimating-training-stress-score-tss/).
 
-The Training Center marks calculated load with `~`. A **partial** label means some
-power coverage or activity load is missing; totals include only supported values,
-without extrapolating the missing load. If the source has no score and there is not
-enough usable power, duration, or a valid FTP, the score stays missing rather than
-becoming zero. These estimates are coaching context, not a substitute for how you
-feel or evidence that a prescribed workout was completed.
+The Training Center shows scores to at most one decimal place and identifies their origin
+as **Source** or **Calculated**, instead of putting a `~` before the number. Coverage
+and missing load are separate: a note such as **97% power coverage** or **1 ride
+without load** explains what is incomplete. Totals include only supported values,
+without extrapolating the missing load. Missing-load counts cover cycling activities
+with positive moving or elapsed time, not unscored walks or zero-duration entries.
+Any valid source-reported score still contributes to the total. Power coverage is
+weighted by reported moving duration across locally power-scored rides; a
+source-reported score alone does not establish complete telemetry. If the source
+has no score and there is not enough usable power, duration, or a valid FTP, the
+score stays missing rather than becoming zero. These estimates are coaching
+context, not a substitute for how you feel or evidence that a prescribed workout
+was completed.
+
+## Planned load
+
+The season area chart shows recorded moving hours against explicit weekly hours
+targets. It is not a fitness model. Weeks without recordings remain gaps, future
+recordings are not projected, and the current week is labeled as in progress.
+Scheduled and recorded totals remain visible together in the week and day views.
+
+Daily calendar imports preserve `Planned TSS` and explicit duration columns,
+including numeric `Duration (min)` values. Weekly sheets can supply `TSS Target`.
+Cancelled sessions do not contribute to forecasts; an ambiguous imported daily
+total is not reused after one of its sessions is cancelled.
+
+An explicit source TSS target or range takes priority. Otherwise, a session with an
+explicit total duration and a supported cycling intensity can receive a
+**calculated forecast**, using `hours × IF² × 100`. Its low/high range describes
+uncertainty about the whole session, including easier riding between efforts; it
+is not an interval prescription or a prediction of the exact device score.
+
+The current whole-session IF assumptions are:
+
+| Session | IF range |
+| --- | --- |
+| Recovery | 0.45–0.60 |
+| Endurance | 0.60–0.75 |
+| Openers | 0.55–0.75 |
+| Tempo | 0.70–0.85 |
+| Sweet spot | 0.75–0.90 |
+| Threshold or VO2 | 0.75–0.95 |
+| Criterium | 0.75–1.00 |
+| Road race | 0.70–0.95 |
+| Dirt race | 0.65–0.90 |
+
+These are application assumptions, not athlete-specific measurements. An explicit
+rest day can be zero; a session without enough information stays unknown.
+
+For a week, an explicit TSS target wins, followed by a complete sum of daily
+targets and forecasts. If daily load is incomplete but the source gives a weekly
+hours budget, Gradient Ascent can show a broader forecast using whole-week IF
+0.55–0.85. It does not distribute that budget among missing days, invent workout
+durations, or create device workouts. Without a usable source budget, an incomplete
+weekly total stays unknown.
+The smaller cumulative TSS chart stops at an unspecified daily load instead of
+silently treating it as zero; the weekly budget is never spread across that gap.
+
+Explicit workouts in `plan/workouts.json` remain independent of calendar prose.
+Their step durations give an exact planned duration; fully specified power targets
+can support a separate, labeled power-model forecast. Open targets or missing FTP
+for watt-based targets leave that forecast unknown. The forecast does not silently
+replace or add to a prose workout, prove completion, or change exported device
+instructions. See [planned schedule export](workout-export.md).
 
 ## Ride titles
 

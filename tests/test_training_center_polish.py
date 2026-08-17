@@ -296,9 +296,10 @@ class TrainingCenterPolishTest(unittest.TestCase):
             "power_load_estimate": {"scope": "recorded_power", "coverage_ratio": 0.793},
         }
         detail = training_center._activity_detail(activity, {}, Path("/tmp"), include_heavy=False)
-        self.assertEqual(detail["tss_label"], "~42 TSS")
+        self.assertEqual(detail["tss_label"], "42.1 TSS")
         self.assertTrue(detail["tss_partial"])
-        self.assertIn("79%", detail["tss_description"])
+        self.assertIn("79.3%", detail["tss_description"])
+        self.assertEqual(detail["tss_qualifier"], "Calculated · 79.3% power coverage")
         self.assertIn("configured FTP", detail["tss_description"])
         self.assertEqual(detail["np_label"], "~210 NP")
         metrics = training_center._day_metrics(
@@ -312,9 +313,9 @@ class TrainingCenterPolishTest(unittest.TestCase):
                 }
             }
         )
-        self.assertEqual(metrics["tss_label"], "~120 TSS")
+        self.assertEqual(metrics["tss_label"], "120 TSS")
         self.assertTrue(metrics["tss_partial"])
-        self.assertIn("Partial", metrics["tss_description"])
+        self.assertIn("recorded power is missing", metrics["tss_description"])
         source = training_center._activity_detail(
             {**activity, "estimated_tss": 0, "estimated_tss_source": "source"},
             {},

@@ -59,6 +59,13 @@ class AggregateTotals:
     estimated_tss_activity_count: int = 0
     estimated_tss_estimated_activity_count: int = 0
     estimated_tss_partial_activity_count: int = 0
+    estimated_tss_relevant_activity_count: int = 0
+    estimated_tss_missing_activity_count: int = 0
+    estimated_tss_relevant_partial_activity_count: int = 0
+    estimated_tss_power_stream_activity_count: int = 0
+    estimated_tss_power_observed_duration_s: float = 0.0
+    estimated_tss_power_load_duration_s: float = 0.0
+    estimated_tss_power_reported_duration_s: float = 0.0
     avg_hr_sum: float = 0.0
     avg_hr_weight: float = 0.0
     avg_power_sum: float = 0.0
@@ -78,8 +85,17 @@ class AggregateTotals:
         kilojoules = float(activity.get("kilojoules") or 0)
         avg_hr = activity.get("average_heartrate")
         avg_power = activity.get("average_watts")
-        estimated_tss = activity.get("estimated_tss")
+        estimated_tss = _safe_float(activity.get("estimated_tss"))
+        if estimated_tss is not None and estimated_tss < 0:
+            estimated_tss = None
         sport = activity.get("sport_type") or "Unknown"
+        relevant_load = _is_cycling_activity(sport) and (
+            (_safe_float(moving_time) or 0) > 0 or (_safe_float(elapsed_time) or 0) > 0
+        )
+        if relevant_load:
+            self.estimated_tss_relevant_activity_count += 1
+            if estimated_tss is None:
+                self.estimated_tss_missing_activity_count += 1
 
         self.moving_time_s += moving_time
         self.elapsed_time_s += elapsed_time
@@ -87,15 +103,35 @@ class AggregateTotals:
         self.elevation_gain_m += elevation
         self.kilojoules += kilojoules
         if estimated_tss is not None:
-            self.estimated_tss += float(estimated_tss)
+            self.estimated_tss += estimated_tss
             self.estimated_tss_activity_count += 1
             if str(activity.get("estimated_tss_source") or "").startswith("estimated_"):
                 self.estimated_tss_estimated_activity_count += 1
-            if (
-                activity.get("estimated_tss_source") == "estimated_power_stream"
-                and (activity.get("power_load_estimate") or {}).get("scope") == "recorded_power"
-            ):
-                self.estimated_tss_partial_activity_count += 1
+            if activity.get("estimated_tss_source") == "estimated_power_stream":
+                details = activity.get("power_load_estimate")
+                details = details if isinstance(details, dict) else {}
+                if details.get("scope") == "recorded_power":
+                    self.estimated_tss_partial_activity_count += 1
+                    if relevant_load:
+                        self.estimated_tss_relevant_partial_activity_count += 1
+                observed = _safe_float(details.get("observed_duration_s"))
+                load_duration = _safe_float(details.get("load_duration_s"))
+                reported = _safe_float(moving_time)
+                if (
+                    relevant_load
+                    and reported is not None
+                    and reported > 0
+                    and observed is not None
+                    and observed >= 0
+                    and load_duration is not None
+                    and 0 <= load_duration <= observed
+                ):
+                    # Source-only scores do not establish telemetry coverage.
+                    # Weight coverage by duration, never by ride count or TSS.
+                    self.estimated_tss_power_stream_activity_count += 1
+                    self.estimated_tss_power_observed_duration_s += observed
+                    self.estimated_tss_power_load_duration_s += min(load_duration, reported)
+                    self.estimated_tss_power_reported_duration_s += reported
 
         if _is_cycling_activity(sport):
             if activity.get("is_meaningful_ride"):
@@ -131,6 +167,21 @@ class AggregateTotals:
         self.estimated_tss_activity_count += other.estimated_tss_activity_count
         self.estimated_tss_estimated_activity_count += other.estimated_tss_estimated_activity_count
         self.estimated_tss_partial_activity_count += other.estimated_tss_partial_activity_count
+        self.estimated_tss_relevant_activity_count += other.estimated_tss_relevant_activity_count
+        self.estimated_tss_missing_activity_count += other.estimated_tss_missing_activity_count
+        self.estimated_tss_relevant_partial_activity_count += (
+            other.estimated_tss_relevant_partial_activity_count
+        )
+        self.estimated_tss_power_stream_activity_count += (
+            other.estimated_tss_power_stream_activity_count
+        )
+        self.estimated_tss_power_observed_duration_s += (
+            other.estimated_tss_power_observed_duration_s
+        )
+        self.estimated_tss_power_load_duration_s += other.estimated_tss_power_load_duration_s
+        self.estimated_tss_power_reported_duration_s += (
+            other.estimated_tss_power_reported_duration_s
+        )
         self.avg_hr_sum += other.avg_hr_sum
         self.avg_hr_weight += other.avg_hr_weight
         self.avg_power_sum += other.avg_power_sum
@@ -161,6 +212,26 @@ class AggregateTotals:
             "estimated_tss_activity_count": self.estimated_tss_activity_count,
             "estimated_tss_estimated_activity_count": self.estimated_tss_estimated_activity_count,
             "estimated_tss_partial_activity_count": self.estimated_tss_partial_activity_count,
+            "estimated_tss_relevant_activity_count": self.estimated_tss_relevant_activity_count,
+            "estimated_tss_missing_activity_count": self.estimated_tss_missing_activity_count,
+            "estimated_tss_relevant_partial_activity_count": self.estimated_tss_relevant_partial_activity_count,
+            "estimated_tss_power_stream_activity_count": self.estimated_tss_power_stream_activity_count,
+            "estimated_tss_power_observed_duration_s": round(
+                self.estimated_tss_power_observed_duration_s, 1
+            ),
+            "estimated_tss_power_load_duration_s": round(
+                self.estimated_tss_power_load_duration_s, 1
+            ),
+            "estimated_tss_power_reported_duration_s": round(
+                self.estimated_tss_power_reported_duration_s, 1
+            ),
+            "estimated_tss_power_coverage_ratio": round(
+                self.estimated_tss_power_load_duration_s
+                / self.estimated_tss_power_reported_duration_s,
+                6,
+            )
+            if self.estimated_tss_power_reported_duration_s > 0
+            else None,
             "average_heartrate": round(avg_hr, 1) if avg_hr is not None else None,
             "average_watts": round(avg_power, 1) if avg_power is not None else None,
             "by_sport": dict(sorted(self.by_sport.items())),

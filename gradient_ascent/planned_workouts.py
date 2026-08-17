@@ -334,17 +334,19 @@ def _events(events: Any) -> list[dict[str, Any]]:
     return result
 
 
-def load_planned_workouts(
-    data_dir: Path, *, start: date | None = None, end: date | None = None
-) -> list[dict[str, Any]]:
-    """Read independent calendar prose and explicit prescriptions, without writes."""
+def _validate_date_range(start: date | None, end: date | None) -> None:
     if any(value is not None and type(value) is not date for value in (start, end)) or (
         start and end and start > end
     ):
         raise ValueError("Planned workout date range is invalid.")
+
+
+def load_structured_workouts(
+    data_dir: Path, *, start: date | None = None, end: date | None = None
+) -> list[dict[str, Any]]:
+    """Read only explicit prescriptions, independently of legacy calendar data."""
+    _validate_date_range(start, end)
     root = Path(data_dir).expanduser()
-    entries = _legacy(_read_optional(root, "weeks.json", []))
-    entries.extend(_events(_read_optional(root, "events.json", [])))
     document = _read_optional(root, "workouts.json", {"version": 1, "workouts": []})
     if (
         not isinstance(document, dict)
@@ -355,7 +357,24 @@ def load_planned_workouts(
         or len(document["workouts"]) > MAX_STRUCTURED_WORKOUTS
     ):
         raise ValueError("Structured workout file must use the supported version 1 schema.")
-    entries.extend(_structured(value) for value in document["workouts"])
+    entries = _calendar_entries(_structured(value) for value in document["workouts"])
+    return [
+        entry
+        for entry in entries
+        if (start is None or _day(entry["date"]) >= start)
+        and (end is None or _day(entry["date"]) <= end)
+    ]
+
+
+def load_planned_workouts(
+    data_dir: Path, *, start: date | None = None, end: date | None = None
+) -> list[dict[str, Any]]:
+    """Read independent calendar prose and explicit prescriptions, without writes."""
+    _validate_date_range(start, end)
+    root = Path(data_dir).expanduser()
+    entries = _legacy(_read_optional(root, "weeks.json", []))
+    entries.extend(_events(_read_optional(root, "events.json", [])))
+    entries.extend(load_structured_workouts(root))
     entries = _calendar_entries(entries)
     return [
         entry

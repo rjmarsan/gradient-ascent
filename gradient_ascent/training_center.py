@@ -9956,6 +9956,9 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function renderWeek() {
+      const active = document.activeElement;
+      const horizonFocus = active?.hasAttribute("data-season-today") ? "[data-season-today]"
+        : active?.hasAttribute("data-season-track") ? "[data-season-track]" : null;
       const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || DATA.weeks[0];
       if (!week) {
         const rider = String(DATA.athlete?.display_name || "Your").trim();
@@ -10074,6 +10077,8 @@ HTML_TEMPLATE = """<!doctype html>
         </article>`;
       bindWeekCards();
       bindSeasonHorizon();
+      const focusTarget = horizonFocus ? document.querySelector(horizonFocus) : null;
+      if (focusTarget && !focusTarget.disabled) focusTarget.focus({ preventScroll: true });
       requestAnimationFrame(syncWeekIntervalLists);
     }
 

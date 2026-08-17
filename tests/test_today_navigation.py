@@ -143,3 +143,60 @@ console.log(JSON.stringify({hidden, refreshes, delays:timers.map(item=>item.dela
             controls,
         )
         self.assertTrue("      bindCurrentDateLifecycle();" in training_center.HTML_TEMPLATE)
+
+    def test_background_week_redraw_preserves_only_the_focused_horizon_control(self) -> None:
+        result = self._run(
+            """
+const DATA = {weeks:[{start_date:'2026-08-17',end_date:'2026-08-23',days:[]}]};
+const state = {selectedWeekStart:'2026-08-17'};
+const calls = [];
+let missing = false, disabled = false;
+const select = {value:'2026-08-17'};
+const root = {set innerHTML(value) { document.activeElement = null; }};
+const document = {
+  activeElement:null,
+  getElementById(id) { return id === 'week-list' ? root : select; },
+  querySelector(selector) {
+    if (missing) return null;
+    return {disabled, focus(options) { calls.push({selector, options}); }};
+  }
+};
+const escapeHtml = value => String(value ?? '');
+const renderSeasonHorizon = () => '';
+const weekDistanceLabel = () => '';
+function hydrateWeekActivityDetails() {}
+function updateWeekNavButtons() {}
+function renderWeekDay() {}
+function bindWeekCards() {}
+function bindSeasonHorizon() {}
+function requestAnimationFrame() {}
+function syncWeekIntervalLists() {}
+"""
+            + self._functions("renderWeek", "function bindSeasonHorizon(")
+            + """
+const results = [];
+for (const scenario of [
+  {attribute:'data-season-today'},
+  {attribute:'data-season-track'},
+  {attribute:'data-unrelated-input'},
+  {attribute:'data-season-today', missing:true},
+  {attribute:'data-season-today', disabled:true}
+]) {
+  calls.length = 0;
+  missing = Boolean(scenario.missing);
+  disabled = Boolean(scenario.disabled);
+  document.activeElement = {hasAttribute(name) { return name === scenario.attribute; }};
+  renderWeek();
+  results.push([...calls]);
+}
+console.log(JSON.stringify({results}));
+"""
+        )
+        today, slider, unrelated, missing, disabled = result["results"]
+        self.assertEqual(
+            today, [{"selector": "[data-season-today]", "options": {"preventScroll": True}}]
+        )
+        self.assertEqual(
+            slider, [{"selector": "[data-season-track]", "options": {"preventScroll": True}}]
+        )
+        self.assertEqual((unrelated, missing, disabled), ([], [], []))

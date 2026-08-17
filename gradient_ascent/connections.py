@@ -72,6 +72,18 @@ PROVIDERS: dict[str, ConnectionProvider] = {
         ),
         notes=("The export stays local and is parsed on this device.",),
     ),
+    "ridewithgps": ConnectionProvider(
+        key="ridewithgps",
+        label="Ride with GPS",
+        input_mode="vendor_cli",
+        support_tier="official_cli",
+        category="activity",
+        summary="Sync ride history, power, heart rate, GPS, and laps through Ride with GPS's own ride CLI.",
+        notes=(
+            "Ride with GPS handles sign-in and stores its own session. Gradient Ascent never asks for your password or API key.",
+            "Sync is optional and runs only after you connect this workspace.",
+        ),
+    ),
 }
 
 
@@ -125,6 +137,8 @@ def update_provider(
     fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     spec = provider_spec(provider)
+    if provider == "ridewithgps":
+        raise ValueError("Use Ride with GPS setup to connect its official CLI; credential fields are not accepted.")
     ensure_connection_layout(data_dir)
     config = _load_connection_config(data_dir)
     existing_provider_config = config["providers"].get(provider)
@@ -220,6 +234,26 @@ def _status_for(data_dir: Path, provider: str) -> tuple[str, list[str], list[str
 
 def provider_summary(data_dir: Path, provider: str) -> dict[str, Any]:
     spec = provider_spec(provider)
+    if provider == "ridewithgps":
+        from .ride_connection import ride_status
+
+        ride = ride_status(data_dir)
+        issue = ride.get("issue")
+        next_step = (
+            "Choose Refresh to import recent rides, or Import older rides to resume history."
+            if ride["enabled"]
+            else "Connect Ride with GPS using its official ride CLI."
+        )
+        return {
+            "key": spec.key, "label": spec.label, "input_mode": spec.input_mode,
+            "support_tier": spec.support_tier, "category": spec.category,
+            "summary": spec.summary, "export_url": "", "archive_upload_available": False,
+            "fields": [], "configured_fields": {}, "archive_imported": False,
+            "status": ride["status"], "issues": [issue] if issue else [],
+            "next_steps": [next_step], "notes": list(spec.notes),
+            "test_available": ride["installed"], "last_import_at": ride.get("last_sync_at"),
+            "ride": ride,
+        }
     config = _load_connection_config(data_dir)
     provider_config = config["providers"].get(provider)
     if not isinstance(provider_config, dict):
@@ -323,6 +357,14 @@ def connections_summary_payload(data_dir: Path) -> dict[str, Any]:
 
 
 def check_provider(data_dir: Path, provider: str) -> dict[str, Any]:
+    if provider == "ridewithgps":
+        from .ride_connection import RideConnectionError, check_ride
+
+        try:
+            result = check_ride(data_dir)
+        except (RideConnectionError, OSError, RuntimeError, ValueError):
+            return {"provider": provider, "ok": False, "status": "needs_attention", "issues": ["Check or reconnect the official ride CLI."], "next_steps": ["Run gradient-ascent ride setup."]}
+        return {"provider": provider, "ok": True, "status": result["status"], "issues": [], "next_steps": ["Choose Refresh to import recent rides."]}
     summary = provider_summary(data_dir, provider)
     if provider == "strava":
         return {

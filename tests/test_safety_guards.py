@@ -300,7 +300,7 @@ class SafetyGuardsTest(unittest.TestCase):
                 conn.request("GET", "/api/connections", headers={"Host": host})
                 response = conn.getresponse()
                 payload = json.loads(response.read())
-                self.assertEqual([item["key"] for item in payload["providers"]], ["strava", "apple_health", "garmin"])
+                self.assertEqual([item["key"] for item in payload["providers"]], ["strava", "apple_health", "garmin", "ridewithgps"])
 
                 conn.request(
                     "PUT",

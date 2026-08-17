@@ -38,6 +38,26 @@ def _refresh(workspace: Path, *, cwd: Path | None = None) -> subprocess.Complete
 
 
 class RefreshFlowTest(unittest.TestCase):
+    def test_local_refresh_reports_ridewithgps_recording_coverage(self) -> None:
+        from gradient_ascent.refresh import refresh_workspace
+        from gradient_ascent.storage import write_json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            _init_workspace(workspace, force=False)
+            write_json(workspace / "recordings" / "activities.json", {
+                "recording-synthetic": {
+                    "id": "recording-synthetic", "name": "Synthetic ride",
+                    "sport_type": "Ride", "start_date": "2026-08-15T01:00:00+00:00",
+                    "start_date_local": "2026-08-14T18:00:00-07:00", "moving_time": 1800,
+                    "distance": 12000, "source_provider": "ridewithgps", "source_activity_id": "123",
+                }
+            })
+            summary = refresh_workspace(workspace)
+
+        self.assertEqual(summary["sources"]["recordings"]["count"], 1)
+        self.assertEqual(summary["sources"]["ridewithgps"], {"count": 1, "first": "2026-08-14", "last": "2026-08-14"})
+
     def test_refresh_includes_imported_external_sync_data(self) -> None:
         from gradient_ascent.external_sync import import_sync_manifest
 

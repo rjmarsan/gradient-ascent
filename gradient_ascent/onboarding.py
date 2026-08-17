@@ -13,7 +13,7 @@ ONBOARDING_PATH = Path("plan") / "onboarding.json"
 ALLOWED_CHOICES = {
     "events": {"none", "plan_file"},
     "plan": {"none", "file"},
-    "activities": {"none", "strava_archive", "local_recordings", "external_sync"},
+    "activities": {"none", "strava_archive", "local_recordings", "external_sync", "ridewithgps"},
 }
 
 
@@ -311,8 +311,9 @@ def onboarding_status(data_dir: Path) -> dict[str, Any]:
         "events": "Add priority events or explicitly continue without a current target event.",
         "plan": "Ask whether to import a plan file or continue without a current plan.",
         "activities": (
-            "Ask for a Strava archive, standalone FIT/TCX/GPX files, or an optional "
-            "local companion sync manifest; otherwise continue without activity history."
+            "Offer the official Ride with GPS CLI, a Strava archive, standalone "
+            "FIT/TCX/GPX files, or an optional local companion sync manifest; "
+            "otherwise continue without activity history."
         ),
         "dashboard": "Build the training center and report its local URL.",
     }

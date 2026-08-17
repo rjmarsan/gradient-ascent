@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from gradient_ascent.connections import (
     check_provider,
@@ -12,13 +13,28 @@ from gradient_ascent.connections import (
 
 
 class ConnectionsTest(unittest.TestCase):
-    def test_payload_exposes_only_supported_local_imports(self) -> None:
+    def test_vendor_cli_connection_is_optional_and_never_accepts_credentials(self) -> None:
+        from gradient_ascent import ride_connection
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            ride_connection, "ride_status", return_value={"installed": False, "enabled": False, "status": "needs_setup", "version": "0.1.0", "days": 14, "last_sync_at": None, "last_sync": None, "issue": None}
+        ):
+            data_dir = Path(tmp)
+            providers = connections_payload(data_dir)["providers"]
+            provider = next(item for item in providers if item["key"] == "ridewithgps")
+            self.assertEqual(provider["input_mode"], "vendor_cli")
+            self.assertEqual(provider["fields"], [])
+            self.assertFalse(provider["ride"]["enabled"])
+            with self.assertRaises(ValueError):
+                update_provider(data_dir, "ridewithgps", fields={"api_key": "NEVER_ACCEPT"})
+
+    def test_payload_exposes_local_imports_and_optional_vendor_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             payload = connections_payload(Path(tmp))
 
         self.assertEqual(
             [provider["key"] for provider in payload["providers"]],
-            ["strava", "apple_health", "garmin"],
+            ["strava", "apple_health", "garmin", "ridewithgps"],
         )
         self.assertTrue(payload["providers"][0]["archive_upload_available"])
         self.assertEqual(payload["providers"][0]["input_mode"], "archive")
@@ -31,7 +47,7 @@ class ConnectionsTest(unittest.TestCase):
 
         self.assertEqual(
             [item["key"] for item in payload["available"]],
-            ["strava", "apple_health", "garmin"],
+            ["strava", "apple_health", "garmin", "ridewithgps"],
         )
         self.assertLess(len(json.dumps(payload, separators=(",", ":"))), 1800)
         self.assertNotIn("fields", json.dumps(payload))
@@ -138,6 +154,26 @@ class ConnectionsTest(unittest.TestCase):
         self.assertEqual(companion["status"], "imported")
         self.assertEqual(companion["last_import_at"], "2026-08-14T08:30:00Z")
         self.assertEqual(compact["available"][-1]["key"], "external:ride-service")
+
+    def test_existing_ridewithgps_companion_manifest_can_coexist_with_native_support(self) -> None:
+        from gradient_ascent.external_sync import import_sync_manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            manifest = data_dir / "old-companion.json"
+            manifest.write_text(json.dumps({
+                "version": 1,
+                "provider": {"id": "ridewithgps", "label": "Existing ride companion"},
+                "activities": [{"id": "old-ride", "date": "2026-08-14", "start_date_local": "2026-08-14T08:00:00", "sport_type": "Ride", "moving_time_s": 1800, "distance_m": 12000}],
+                "recovery": [],
+            }))
+            import_sync_manifest(data_dir, manifest)
+            (data_dir / "integrations" / "ridewithgps" / "files").mkdir()
+            payload = connections_payload(data_dir)
+
+        keys = [provider["key"] for provider in payload["providers"]]
+        self.assertIn("ridewithgps", keys)
+        self.assertIn("external:ridewithgps", keys)
 
     def test_local_path_configuration_writes_only_the_connection_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

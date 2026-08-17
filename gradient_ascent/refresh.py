@@ -50,6 +50,14 @@ def _strava_coverage(data_dir: Path) -> dict[str, Any]:
     return _date_coverage(items, "start_date_local", "start_date", "date")
 
 
+def _recording_coverage(data_dir: Path, *, source_provider: str | None = None) -> dict[str, Any]:
+    payload = read_json(data_dir / "recordings" / "activities.json", default={}) or {}
+    items = list(payload.values()) if isinstance(payload, dict) else []
+    if source_provider is not None:
+        items = [item for item in items if isinstance(item, dict) and item.get("source_provider") == source_provider]
+    return _date_coverage(items, "start_date_local", "start_date", "date")
+
+
 def _apple_health_coverage(data_dir: Path) -> dict[str, Any]:
     workouts = read_json(data_dir / "apple_health" / "workouts.json", default=[]) or []
     recovery = read_json(data_dir / "apple_health" / "recovery.json", default=[]) or []
@@ -132,6 +140,8 @@ def refresh_workspace(
             "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "sources": {
                 "strava": _strava_coverage(data_dir),
+                "recordings": _recording_coverage(data_dir),
+                "ridewithgps": _recording_coverage(data_dir, source_provider="ridewithgps"),
                 "apple_health": _apple_health_coverage(data_dir),
                 "garmin": _garmin_coverage(data_dir),
                 "external": _external_sync_coverage(data_dir),

@@ -1,6 +1,6 @@
 ---
 name: coach-sync-refresh
-description: Refresh configured local Gradient Ascent imports and rebuild canonical data, coaching summaries, and the Training Center.
+description: Sync explicitly enabled Ride with GPS, refresh local imports, and rebuild coaching summaries and the Training Center.
 ---
 
 # Coach sync refresh
@@ -45,13 +45,25 @@ The companion owns its provider authentication and network access. Gradient Asce
 "$COACH_CLI" refresh
 ```
 
-The refresh re-imports configured Apple Health and Garmin local paths, then rebuilds canonical records, daily and weekly insights, progress output, and the Training Center.
+Normal refresh first fetches recent changes through Ride with GPS's actual official
+`ride` CLI if the rider explicitly enabled it. It then re-imports configured Apple
+Health and Garmin local paths and rebuilds canonical records, daily and weekly
+insights, progress output, and the Training Center once. Use `refresh --local-only`
+when the rider asks for an offline rebuild. Loading the dashboard and `ride status`
+are offline; `ride check` explicitly contacts the vendor to verify the session.
+
+Do not enable or install a provider during refresh without a separate rider choice.
+Use `$coach-setup-activities` for a new Ride with GPS connection. If the rider asks
+for older history, `ride sync --history` advances a bounded, resumable scan; report
+remaining work and repeat until complete only within that request. `ride disable`
+stops automatic requests without deleting history or changing vendor credentials.
 
 ## Validation
 
 Inspect `derived/post_sync_summary.json` and report:
 
 - each local import status
+- Ride with GPS listed/imported/existing/updated counts and any sync failure, when enabled
 - first and last source dates
 - canonical activity and recovery counts
 - recent weekly gross hours, meaningful ride hours, excluded short-fragment hours, kJ, and estimated TSS
@@ -62,8 +74,10 @@ Do not call the dashboard refreshed if the refresh command failed.
 
 ## Rules
 
-- Use only local athlete-provided files.
+- Use local athlete-provided files or explicitly enabled official Ride with GPS sync.
 - Never ask for provider credentials.
+- The vendor CLI owns Ride with GPS OAuth and tokens; do not read its configuration.
+- Ride with GPS consent does not authorize live Strava or Garmin access.
 - Keep raw archives, health files, and sync manifests out of model context.
 - Preserve current data when an optional source is absent.
 - Missing recovery data must limit the confidence of recovery advice.

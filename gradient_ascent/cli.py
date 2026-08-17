@@ -40,6 +40,8 @@ from .workspace import preview_workspace_purge, purge_workspace_data
 WORKSPACE_GITIGNORE = "\n".join(
     [
         ".env",
+        ".runtime/",
+        "connections/ridewithgps.json",
         "logs/",
         "*.log",
         ".codex/cache/",
@@ -300,10 +302,27 @@ def _parse_args() -> argparse.Namespace:
         "build-training-center",
         help="Build the combined training center HTML and data bundle",
     )
-    subparsers.add_parser(
+    refresh_parser = subparsers.add_parser(
         "refresh",
-        help="Reimport configured local exports and rebuild all derived workspace artifacts",
+        help="Refresh explicitly enabled sources and rebuild derived workspace artifacts",
     )
+    refresh_parser.add_argument("--local-only", action="store_true", help="Rebuild local data without contacting Ride with GPS")
+
+    ride_parser = subparsers.add_parser("ride", help="Set up and use Ride with GPS's official ride CLI")
+    ride_actions = ride_parser.add_subparsers(dest="ride_action", required=True)
+    ride_setup = ride_actions.add_parser("setup", help="Connect this workspace using vendor-owned sign-in")
+    ride_setup.add_argument("--install", action="store_true", help="Allow downloading the checksum-verified official ride CLI if missing")
+    ride_setup.add_argument("--executable", help="Optional independently installed official ride executable")
+    ride_setup.add_argument("--config-dir", help="Optional existing vendor-owned ride configuration directory")
+    ride_setup.add_argument("--days", type=int, help="Recent-sync lookback, 1–365 days (default 14)")
+    ride_setup.add_argument("--reauth", action="store_true", help="Explicitly choose the account again in your browser")
+    ride_actions.add_parser("status", help="Show offline connection status without contacting the provider")
+    ride_actions.add_parser("check", help="Explicitly verify the vendor-owned sign-in and account")
+    ride_sync = ride_actions.add_parser("sync", help="Import a bounded batch of rides and rebuild once")
+    ride_sync.add_argument("--days", type=int, help="Override recent lookback for this sync")
+    ride_sync.add_argument("--history", action="store_true", help="Import the next resumable full-history batch")
+    ride_sync.add_argument("--restart-history", action="store_true", help="Restart a history scan from page one; existing rides are deduplicated")
+    ride_actions.add_parser("disable", help="Stop future sync without deleting rides or the vendor's sign-in")
 
     serve_training_center_parser = subparsers.add_parser(
         "serve-training-center",
@@ -428,7 +447,10 @@ def _parse_args() -> argparse.Namespace:
     connections_test_parser.add_argument("provider", choices=provider_choices)
 
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.command == "ride" and args.ride_action == "sync" and args.restart_history and not args.history:
+        parser.error("--restart-history requires --history")
+    return args
 
 
 
@@ -655,6 +677,8 @@ def _init_data_dir_unlocked(data_dir: Path) -> dict[str, object]:
     ensure_text_line(data_dir / ".gitignore", ".codex/cache/")
     ensure_text_line(data_dir / ".gitignore", "derived/.cache/")
     ensure_text_line(data_dir / ".gitignore", "integrations/")
+    ensure_text_line(data_dir / ".gitignore", ".runtime/")
+    ensure_text_line(data_dir / ".gitignore", "connections/ridewithgps.json")
     return {"data_dir": str(data_dir), "mode": "empty"}
 
 
@@ -692,6 +716,58 @@ def main() -> None:
         return
 
     ensure_private_data_dir(config.data_dir, action=f"run {args.command}")
+
+    if args.command == "ride":
+        from .configured_refresh import aggregate_refresh_result, refresh_configured_workspace
+        from .ride_cli import RideCLIError
+        from .ride_connection import (
+            RideConnectionError,
+            check_ride,
+            connect_ride,
+            disable_ride,
+            load_ride_settings,
+            ride_status,
+        )
+
+        try:
+            if args.ride_action == "status":
+                result = ride_status(config.data_dir)
+            elif args.ride_action == "check":
+                result = check_ride(config.data_dir)
+            elif args.ride_action == "disable":
+                result = disable_ride(config.data_dir)
+            elif args.ride_action == "setup":
+                allow_install = args.install
+                if not allow_install and not args.executable and sys.stdin.isatty() and not ride_status(config.data_dir)["installed"]:
+                    answer = input("Download the verified official Ride with GPS CLI into this private workspace? [y/N] ")
+                    allow_install = answer.strip().lower() in {"y", "yes"}
+
+                def show_authorization_url(url: str) -> None:
+                    print("Open this link in your preferred browser profile:", flush=True)
+                    print(url, flush=True)
+
+                result = connect_ride(
+                    config.data_dir,
+                    install=allow_install,
+                    executable=Path(args.executable) if args.executable else None,
+                    config_dir=Path(args.config_dir) if args.config_dir else None,
+                    days=args.days,
+                    force_login=args.reauth,
+                    on_authorization_url=show_authorization_url,
+                )
+            else:
+                if not load_ride_settings(config.data_dir)["enabled"]:
+                    raise RideConnectionError("Run gradient-ascent ride setup before syncing rides.")
+                result = aggregate_refresh_result(refresh_configured_workspace(
+                    config.data_dir, ride_days=args.days, ride_history=args.history,
+                    restart_history=args.restart_history,
+                ))
+        except (RideCLIError, RideConnectionError) as exc:
+            raise SystemExit(str(exc)) from None
+        except (OSError, RuntimeError, ValueError):
+            raise SystemExit("Ride with GPS could not complete this action. Check the connection and retry.") from None
+        print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        return
 
     if args.command == "onboarding-status":
         payload = onboarding_status(config.data_dir)
@@ -866,22 +942,15 @@ def main() -> None:
         return
 
     if args.command == "refresh":
-        from .refresh import refresh_workspace
+        from .configured_refresh import aggregate_refresh_result, refresh_configured_workspace
+        from .ride_connection import RideConnectionError
 
-        result = refresh_workspace(config.data_dir)
-        print(
-            "Workspace refresh complete",
-            json.dumps(
-                {
-                    "activities": result["canonical"]["activities"],
-                    "recovery": result["canonical"]["recovery"],
-                    "weeks": result["insights"]["weeks"],
-                    "training_center": result["training_center"]["html"],
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-        )
+        try:
+            result = refresh_configured_workspace(config.data_dir, local_only=args.local_only)
+        except (RideConnectionError, OSError, RuntimeError, ValueError) as exc:
+            message = str(exc) if isinstance(exc, RideConnectionError) else "Workspace refresh failed. Check Connections and retry."
+            raise SystemExit(message) from None
+        print("Workspace refresh complete", json.dumps(aggregate_refresh_result(result), separators=(",", ":"), sort_keys=True))
         return
 
     if args.command == "serve-training-center":

@@ -31,12 +31,12 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def import_activity_recording(
-    data_dir: Path,
+def prepare_activity_recording(
     recording_path: Path,
     *,
     filename: str | None = None,
 ) -> dict[str, Any]:
+    """Parse one recording without changing a workspace."""
     recording_path = recording_path.expanduser().resolve()
     format_name = recording_format(recording_path.name)
     if format_name is None or recording_path.suffix.lower() == ".gz":
@@ -55,33 +55,65 @@ def import_activity_recording(
     if not start_date:
         raise ValueError("Activity recording does not contain timestamped samples.")
 
-    activities = read_json(_activities_path(data_dir), default={}) or {}
-    if not isinstance(activities, dict):
-        activities = {}
-    created = activity_id not in activities
-    existing = activities.get(activity_id) if isinstance(activities.get(activity_id), dict) else {}
     display_filename = filename or recording_path.name
     activity = {
         "id": activity_id,
-        "name": existing.get("name") or _activity_name(display_filename),
+        "name": _activity_name(display_filename),
         "sport_type": "Ride",
         "type": "Ride",
         "start_date": start_date,
         "start_date_local": start_date,
         **{key: value for key, value in summary.items() if value is not None},
         "recording_format": format_name,
-        "recording_filename": existing.get("recording_filename") or display_filename,
+        "recording_filename": display_filename,
         "import_source": LOCAL_RECORDING_SOURCE,
     }
-    activities[activity_id] = activity
-
     streams = dict(parsed["streams"])
     streams["source"] = LOCAL_RECORDING_SOURCE
     laps = dict(parsed["laps"])
     laps["source"] = LOCAL_RECORDING_SOURCE
+    return {
+        "activity": activity,
+        "streams": streams,
+        "laps": laps,
+        "stream_count": len(streams.get("streams") or []),
+        "lap_count": len(laps.get("laps") or []),
+    }
+
+
+def import_activity_recording(
+    data_dir: Path,
+    recording_path: Path,
+    *,
+    filename: str | None = None,
+) -> dict[str, Any]:
+    prepared = prepare_activity_recording(recording_path, filename=filename)
+    activity = prepared["activity"]
+    activity_id = activity["id"]
+    activities = read_json(_activities_path(data_dir), default={}) or {}
+    if not isinstance(activities, dict):
+        activities = {}
+    created = activity_id not in activities
+    existing = activities.get(activity_id) if isinstance(activities.get(activity_id), dict) else {}
+    activity["name"] = existing.get("name") or activity["name"]
+    activity["recording_filename"] = (
+        existing.get("recording_filename") or activity["recording_filename"]
+    )
+    if existing.get("id") == activity_id:
+        for key in (
+            "start_date_local",
+            "source_provider",
+            "source_provider_name",
+            "source_activity_id",
+            "source_url",
+        ):
+            value = existing.get(key)
+            if isinstance(value, str) and value:
+                activity[key] = value
+    activities[activity_id] = activity
     write_json(_activities_path(data_dir), activities)
-    write_json(data_dir / "recordings" / "streams" / f"{activity_id}.json", streams)
-    write_json(data_dir / "recordings" / "laps" / f"{activity_id}.json", laps)
+    write_json(data_dir / "recordings" / "streams" / f"{activity_id}.json", prepared["streams"])
+    write_json(data_dir / "recordings" / "laps" / f"{activity_id}.json", prepared["laps"])
 
     state_path = data_dir / "recordings" / "state.json"
     state = read_json(state_path, default={}) or {}
@@ -96,6 +128,6 @@ def import_activity_recording(
     return {
         "created": created,
         "activity": activity,
-        "stream_count": len(streams.get("streams") or []),
-        "lap_count": len(laps.get("laps") or []),
+        "stream_count": prepared["stream_count"],
+        "lap_count": prepared["lap_count"],
     }

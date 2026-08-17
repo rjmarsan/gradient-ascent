@@ -1,6 +1,6 @@
 {
   "name": "gradient-ascent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-first cycling coaching, training-plan imports, activity history, recovery data, and dashboards for Codex.",
   "author": {
     "name": "Gradient Ascent Contributors"

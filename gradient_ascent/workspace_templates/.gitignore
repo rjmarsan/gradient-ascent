@@ -1,4 +1,6 @@
 .env
+.runtime/
+connections/ridewithgps.json
 logs/
 *.log
 .codex/cache/

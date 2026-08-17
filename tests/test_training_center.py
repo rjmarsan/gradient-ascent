@@ -34,6 +34,39 @@ def _training_center_payload(data_js: str) -> dict:
 
 
 class TrainingCenterTest(unittest.TestCase):
+    def test_ride_setup_is_clickable_and_uses_the_guarded_local_api(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            _init_workspace(workspace, force=False)
+            build_insights(workspace, None, workspace / "derived")
+            result = build_training_center(workspace)
+            html = Path(result["html"]).read_text(encoding="utf-8")
+
+        self.assertIn('const RIDE_SETUP_API = "./api/connections/ridewithgps/setup"', html)
+        self.assertIn("Install and connect", html)
+        self.assertIn("Open Ride with GPS sign-in", html)
+        self.assertIn("Import older rides", html)
+        self.assertIn("Stop syncing", html)
+        self.assertIn("async function rideSetupAction", html)
+        self.assertIn("headers: apiHeaders", html)
+        self.assertNotIn("window.open(state.rideSetup", html)
+
+    def test_ridewithgps_activity_link_is_reconstructed_from_trusted_source_id(self) -> None:
+        activity = {
+            "id": "recording:recording-synthetic",
+            "provider_id": "recording-synthetic",
+            "name": "A synthetic ride",
+            "source": {"provider": "recording"},
+            "raw": {"source_provider": "ridewithgps", "source_activity_id": "123", "source_url": "javascript:bad"},
+        }
+        detail = training_center_module._activity_detail(activity, {}, Path("/tmp"), include_heavy=False)
+        self.assertEqual(detail["source_label"], "Ride with GPS")
+        self.assertEqual(detail["source_url"], "https://ridewithgps.com/trips/123")
+        self.assertIsNone(detail["strava_url"])
+        activity["raw"]["source_activity_id"] = "../unsafe"
+        detail = training_center_module._activity_detail(activity, {}, Path("/tmp"), include_heavy=False)
+        self.assertIsNone(detail["source_url"])
+
     def test_calendar_renders_one_selectable_year_instead_of_all_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "workspace"
@@ -475,12 +508,12 @@ class TrainingCenterTest(unittest.TestCase):
                     / "training_center_activity_details.json"
                 ).read_text(encoding="utf-8")
             )
-            self.assertEqual(manifest["version"], 1)
+            self.assertEqual(manifest["version"], training_center_module.ACTIVITY_DETAILS_CACHE_VERSION)
             self.assertEqual(len(manifest["weeks"]), 1)
             self.assertNotIn("lap_counts", next(iter(manifest["weeks"].values())))
             with patch(
                 "gradient_ascent.training_center.ACTIVITY_DETAILS_CACHE_VERSION",
-                2,
+                training_center_module.ACTIVITY_DETAILS_CACHE_VERSION + 1,
             ):
                 versioned = build_training_center(workspace)
                 self.assertTrue(changed_laps_sidecar.exists())

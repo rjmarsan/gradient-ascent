@@ -106,7 +106,30 @@ Never silently replace a completed profile, goals, or local plan decisions.
 
 ### Activity History
 
-Ask whether the rider has an official Strava account archive, standalone FIT/TCX/GPX ride files, or a local sync manifest from an optional companion installed separately. Import locally without reading raw activity rows, streams, or manifest payloads into the model context.
+Ask whether the rider wants optional Ride with GPS sync, has an official Strava account archive, standalone FIT/TCX/GPX ride files, or a local sync manifest from an optional companion installed separately. Keep raw activity rows, streams, and manifest payloads out of model context.
+
+For Ride with GPS, inspect offline status first:
+
+```bash
+"$WORKSPACE_DIR/.codex/bin/gradient-ascent" ride status
+```
+
+Only after the rider chooses to connect, run `ride setup`. Add `--install` only after
+they approve downloading the pinned official vendor CLI. Give the rider the printed
+sign-in URL to click in their chosen browser profile; never open a profile for them
+or ask for credentials. The vendor CLI owns OAuth and its token store. Then run:
+
+```bash
+"$WORKSPACE_DIR/.codex/bin/gradient-ascent" ride check
+"$WORKSPACE_DIR/.codex/bin/gradient-ascent" ride sync
+"$WORKSPACE_DIR/.codex/bin/gradient-ascent" onboarding-choice activities ridewithgps
+```
+
+If the rider asks for older history, run `ride sync --history` and report its bounded,
+resumable progress; repeat only as needed to finish the requested import. Do not
+claim complete history while more pages remain. `ride disable` stops future automatic
+sync without deleting imported rides or the vendor's login. Connecting this source
+does not authorize live Strava or Garmin access.
 
 For Strava:
 
@@ -137,14 +160,15 @@ If the rider wants to continue without activity history:
 "$WORKSPACE_DIR/.codex/bin/gradient-ascent" onboarding-choice activities none
 ```
 
-Do not ask for provider credentials. Gradient Ascent imports athlete-provided local files.
+Do not ask for provider credentials. Local-file setup remains available without any
+provider connection or optional companion.
 
 ### Dashboard
 
 Build the available local view even when optional data is absent:
 
 ```bash
-"$WORKSPACE_DIR/.codex/bin/gradient-ascent" refresh
+"$WORKSPACE_DIR/.codex/bin/gradient-ascent" refresh --local-only
 "$WORKSPACE_DIR/.codex/bin/gradient-ascent" onboarding-status --json
 ```
 
@@ -156,7 +180,9 @@ Serve it when useful and report the verified localhost URL:
 
 Use the actual printed port. Fetch `/api/health` there and match its `workspace_id` to this process before reporting the URL.
 
-Recovery, health sources, and companion sync are optional follow-up setup. They do not block core onboarding.
+Use normal `refresh` instead when the rider wants an explicitly enabled Ride with GPS
+connection to fetch recent changes before the local rebuild. Recovery, health sources,
+Ride with GPS, and companion sync are optional; they do not block core onboarding.
 
 ## Prompt Efficiency
 

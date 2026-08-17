@@ -1,5 +1,6 @@
 .env
 .venv/
+.runtime/
 __pycache__/
 *.pyc
 .DS_Store
@@ -13,4 +14,6 @@ build/
 data/
 gradient-ascent-data/
 private-data/
+integrations/
+connections/ridewithgps.json
 *.log

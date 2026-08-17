@@ -80,7 +80,59 @@ to its Codex conversation.
 
 For Apple Health and Garmin, the same path can be saved in the Connections view. A later dashboard refresh will re-import the current contents of that local path.
 
-An optional, separately installed companion can supply activity or recovery data through a versioned local JSON sync manifest. Import that manifest with `import-sync-manifest`, then run `refresh`. Any authentication or provider network access belongs exclusively to the companion. Gradient Ascent has no provider-login setup and never receives provider credentials. Do not enter passwords, API keys, session cookies, MFA codes, or OAuth tokens; do not print manifests or their raw activity and recovery payloads into model context.
+An optional, separately installed companion can supply activity or recovery data through a versioned local JSON sync manifest. Import that manifest with `import-sync-manifest`, then run `refresh`. Authentication and provider network access for that companion remain in the separate application. Gradient Ascent never receives provider credentials. Do not enter passwords, API keys, session cookies, MFA codes, or OAuth tokens; do not print manifests or their raw activity and recovery payloads into model context.
+
+### Optional Ride with GPS connection
+
+Use the Training Center's **Connections** view: choose **Install and connect**, or
+**Connect** to use an existing supported official CLI. Click the displayed sign-in
+link yourself, choosing the correct browser profile. You can also run:
+
+```bash
+.codex/bin/gradient-ascent ride setup --install
+.codex/bin/gradient-ascent ride status
+.codex/bin/gradient-ascent ride check
+.codex/bin/gradient-ascent ride sync --days 14
+```
+
+`--install` explicitly authorizes a download of the checksum-pinned official
+[`ride` v0.1.0 binary](https://github.com/ridewithgps/ride-cli/releases/tag/v0.1.0).
+The supported release provides macOS arm64/x64 and Linux x64 binaries. Without that
+flag, setup uses an already installed, verified binary; select one with
+`ride setup --executable /absolute/path/to/ride`. `ride setup --days N` changes the
+recent-sync lookback. No Claude installation is required for the vendor's login or
+API commands. Its API command may also perform the vendor's periodic GitHub release
+check. See the [official CLI documentation](https://github.com/ridewithgps/ride-cli/tree/v0.1.0).
+
+Gradient Ascent invokes the real vendor CLI against `https://ridewithgps.com`; the
+CLI handles OAuth and stores its own tokens. By default, the vendor's existing
+configuration stays in use. If you already maintain a separate private vendor
+configuration directory, select it with `ride setup --config-dir /absolute/path`.
+Gradient Ascent stores that non-secret path, not its contents. Never copy API keys,
+passwords, cookies, or tokens into Gradient Ascent, a prompt, or the public checkout.
+This is an independent integration, not a claim of vendor endorsement.
+
+`ride status` is offline. **Check** / `ride check` explicitly verifies the current
+vendor session. To correct a login, run `ride setup --reauth` and click its new link;
+the workspace refuses to mix a different account into existing athlete data. Use a
+separate private athlete workspace for a different rider.
+
+For older activity history:
+
+```bash
+.codex/bin/gradient-ascent ride sync --history
+```
+
+The scan is bounded; repeat it, or choose **Import older rides** again, until the
+reported history progress is complete. It resumes automatically. Use
+`ride sync --history --restart-history` only when you intend to restart that scan. Unchanged
+trips are skipped; changed trips replace their earlier imported version. Available
+sensor samples, timestamps, and laps are retained in private local recordings.
+
+Use **Stop syncing** or `ride disable` to stop automatic Ride with GPS requests.
+This preserves imported history and does not log out the vendor CLI or revoke its
+tokens. Strava archives, Garmin exports, and optional companion manifests continue
+to work independently; no unofficial live Strava or Garmin connector is enabled.
 
 ## 6. Build and serve the Training Center
 
@@ -142,6 +194,11 @@ Use the refresh button or run:
 ```
 
 Check `derived/post_sync_summary.json` for source coverage and local import errors.
+If Ride with GPS is enabled, normal refresh fetches its recent changes before one
+local rebuild. Use `refresh --local-only` when you want an offline rebuild, and
+`ride check` when you explicitly want to test the vendor session. A provider failure
+must be reported as a failure; a local rebuild alone is not proof that new rides were
+fetched.
 
 ### A local export cannot be found
 

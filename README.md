@@ -19,6 +19,7 @@ The project is cycling-first. Setup stays conversational: the rider gives Codex 
 
 - rider profile, availability, constraints, goals, and priority events
 - training-plan import from CSV or XLSX
+- optional Ride with GPS activity sync through its actual official `ride` CLI
 - official Strava account archives, including local FIT, TCX, and GPX parsing
 - official Garmin Connect account exports for recovery history
 - Apple Health `export.xml` for workouts and recovery signals
@@ -27,7 +28,7 @@ The project is cycling-first. Setup stays conversational: the rider gives Codex 
 - a localhost Training Center with notes, source status, refresh, and archive upload
 - persistent coach notes and multi-perspective coaching advice
 
-All source ingestion is file-based. Gradient Ascent does not request provider passwords, API keys, session cookies, MFA codes, or OAuth tokens.
+Local file imports work without a provider connection. If you explicitly enable Ride with GPS, Gradient Ascent uses the vendor's official CLI for sign-in and read-only activity requests. Gradient Ascent does not request provider passwords, API keys, session cookies, MFA codes, or OAuth tokens.
 
 ## Requirements
 
@@ -87,6 +88,35 @@ cd ~/code/gradient-ascent-workspace
 The server binds to `127.0.0.1` only. It prints the exact URL and a workspace ID at startup.
 
 ## Import data
+
+### Ride with GPS
+
+In the Training Center's **Connections** view, choose **Install and connect** (or
+**Connect** if the official CLI is already installed), then click the displayed
+sign-in link in the browser profile you want to use. The equivalent commands are:
+
+```bash
+.codex/bin/gradient-ascent ride setup --install
+.codex/bin/gradient-ascent ride check
+.codex/bin/gradient-ascent refresh
+```
+
+Installation is optional and consent-driven. Gradient Ascent verifies the actual
+[Ride with GPS `ride` v0.1.0 release](https://github.com/ridewithgps/ride-cli/releases/tag/v0.1.0)
+and uses `https://ridewithgps.com`. The vendor CLI owns OAuth and its token store;
+you never supply an API key or password to Gradient Ascent. An existing supported
+CLI can be selected with `ride setup --executable /path/to/ride`. This integration
+does not imply that Ride with GPS endorses Gradient Ascent.
+
+Recent sync is incremental: unchanged trips are skipped, edited trips are updated,
+and available timing, power, cadence, heart-rate, and lap data are retained in
+private local recordings. To import older rides, use **Import older rides** or run
+`ride sync --history` repeatedly until its progress reports completion. Each run is
+bounded and resumes its saved progress. `ride sync --history --restart-history` starts that
+history scan again. Use `ride status` for an offline status check and `ride disable`
+or **Stop syncing** to stop future automatic requests without deleting imported rides
+or changing the vendor's login. See [INSTALL.md](INSTALL.md#optional-ride-with-gps-connection)
+for the full setup and account-switching details.
 
 ### Strava
 
@@ -152,7 +182,7 @@ A separate companion can sync activity or recovery data and write a versioned, p
 .codex/bin/gradient-ascent refresh
 ```
 
-Companions are optional and installed separately. They own any provider authentication and network access; Gradient Ascent does not bundle unofficial connectors, make provider network requests, or accept provider credentials. Imported companion manifests stay in the athlete workspace's Git-ignored `integrations/` directory. Keep them private and out of model context because they can contain personal activities, location, or health data.
+Companions are optional and installed separately. They own any authentication and network access for their providers. Gradient Ascent does not bundle unofficial connectors or accept provider credentials; its separately enabled Ride with GPS support uses the actual vendor CLI described above. Imported companion manifests stay in the athlete workspace's Git-ignored `integrations/` directory. Keep them private and out of model context because they can contain personal activities, location, or health data.
 
 ### Training plan
 
@@ -164,7 +194,16 @@ The plan builder accepts the shipped weekly matrix format and daily rows with at
 
 ## Refresh behavior
 
-The Training Center refresh button re-imports configured Apple Health and Garmin export paths, rebuilds canonical records and coaching summaries, and regenerates the dashboard. Strava history advances when the rider uploads or imports a newer official archive. Optional companion data appears after importing its latest local sync manifest and refreshing; Gradient Ascent does not initiate provider sync itself.
+The Training Center refresh button, or `gradient-ascent refresh`, first syncs Ride
+with GPS if you explicitly enabled it, re-imports configured Apple Health and Garmin
+export paths, then rebuilds canonical records, coaching summaries, and the dashboard
+once. Use `gradient-ascent refresh --local-only` to rebuild without provider requests.
+Opening the dashboard or checking `ride status` does not initiate a sync.
+
+Strava history advances when the rider uploads or imports a newer official archive.
+Garmin recovery remains a local-export import. Connecting Ride with GPS does not
+authorize live Strava or Garmin access. Optional companion data appears after
+importing its latest local sync manifest and refreshing.
 
 ## Workspace boundary
 
@@ -178,8 +217,8 @@ strava/               normalized Strava history, laps, and streams
 recordings/            normalized loose-file activities, laps, and streams
 garmin/               normalized Garmin recovery days
 apple_health/         normalized Apple Health workouts and recovery
-integrations/         Git-ignored imported companion sync manifests
-connections/          non-secret local import configuration
+integrations/         private provider imports and companion sync manifests
+connections/          non-secret source and enabled-sync configuration
 canonical/            source-normalized records
 derived/              summaries and Training Center assets
 imports/              private source archives and files

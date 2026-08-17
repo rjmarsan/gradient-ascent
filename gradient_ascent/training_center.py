@@ -20,7 +20,7 @@ from .workspace_lock import cross_process_locking_available, workspace_lock
 
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-ACTIVITY_DETAILS_CACHE_VERSION = 1
+ACTIVITY_DETAILS_CACHE_VERSION = 2
 MAX_ACTIVITY_DETAIL_SIDECAR_BYTES = 64 * 1024 * 1024
 _training_center_build_lock = workspace_lock
 WEEKDAY_NAMES = {
@@ -1035,9 +1035,22 @@ HTML_TEMPLATE = """<!doctype html>
       background: rgba(238, 234, 222, 0.08);
     }
 
-    .connection-actions button.primary {
+    .connection-actions button.primary,
+    .connection-actions a.primary {
       border-color: rgba(168, 199, 160, 0.28);
       color: var(--accent);
+    }
+
+    .connection-setup-status {
+      border-left: 2px solid var(--accent);
+      padding-left: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .connection-actions button:disabled {
+      cursor: wait;
+      opacity: 0.55;
+      transform: none;
     }
 
     .empty-state-actions a,
@@ -7415,7 +7428,7 @@ HTML_TEMPLATE = """<!doctype html>
           <div class="toolbar">
             <div>
               <h2>Connections</h2>
-              <p class="meta">Drag FIT, TCX, or GPX files anywhere on this page.</p>
+              <p class="meta">Connect Ride with GPS, or drag FIT, TCX, or GPX files onto this page.</p>
             </div>
             <div class="toolbar-actions">
               <button id="connections-import-ride-file" type="button">Import ride file</button>
@@ -7474,6 +7487,7 @@ HTML_TEMPLATE = """<!doctype html>
     const NOTES_API = "./api/daily-notes";
     const SYNC_API = "./api/sync";
     const CONNECTIONS_API = "./api/connections";
+    const RIDE_SETUP_API = "./api/connections/ridewithgps/setup";
     const STRAVA_ARCHIVE_API = "./api/connections/strava/archive";
     const ACTIVITY_RECORDINGS_API = "./api/activity-recordings";
     const STRAVA_EXPORT_URL = "https://www.strava.com/athlete/download_my_account";
@@ -7502,6 +7516,8 @@ HTML_TEMPLATE = """<!doctype html>
       writeToken: "",
       noteSaveTimers: new Map(),
       syncPollTimer: null,
+      rideSetup: null,
+      rideSetupPollTimer: null,
       rideSidebarOpen: initialRideSidebarOpen(),
       connections: null
     };
@@ -8066,6 +8082,15 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function syncProviderSummary(payload = {}) {
+      for (const step of payload.steps || []) {
+        try {
+          const summary = JSON.parse(step.output || "{}").provider_sync?.ridewithgps;
+          if (summary?.status === "synced") {
+            const continuation = summary.has_more ? "; more history is available" : "";
+            return `Ride with GPS: ${summary.imported || 0} new, ${summary.updated || 0} updated, ${summary.existing || 0} unchanged${continuation}`;
+          }
+        } catch (_) { /* Older local companions may emit a different summary. */ }
+      }
       const providerSteps = (payload.steps || []).filter((step) =>
         String(step.name || "").endsWith(" sync") && step.command?.length === 0
       );
@@ -8120,14 +8145,15 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
-    async function startSync() {
+    async function startSync(options = {}) {
       const button = document.getElementById("sync-button");
       if (button?.disabled) return;
       updateSyncButton({ running: true, message: "Starting sync..." });
       try {
         const response = await fetch(SYNC_API, {
           method: "POST",
-          headers: apiHeaders()
+          headers: apiHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify(options)
         });
         if (!response.ok) {
           const errorPayload = await response.json().catch(() => ({}));
@@ -8194,6 +8220,7 @@ HTML_TEMPLATE = """<!doctype html>
       document.body.classList.toggle("primary-shell", PRIMARY_VIEWS.has(view));
       if (view === "connections") {
         renderConnections();
+        if (state.writeToken) void loadRideSetupStatus();
       }
       document.querySelectorAll(".tab[data-view]").forEach((button) => {
         button.classList.toggle("active", button.dataset.view === view);
@@ -8247,6 +8274,41 @@ HTML_TEMPLATE = """<!doctype html>
         </section>`;
     }
 
+    function rideAuthorizationUrl(value) {
+      try {
+        const url = new URL(String(value || ""));
+        return url.origin === "https://ridewithgps.com" && url.pathname === "/oauth/authorize"
+          ? url.toString() : "";
+      } catch (_) { return ""; }
+    }
+
+    function renderRideWithGPSSetup(provider) {
+      if (provider.key !== "ridewithgps") return "";
+      const ride = provider.ride || {};
+      const job = state.rideSetup || {};
+      const running = Boolean(job.running);
+      const authorizationUrl = rideAuthorizationUrl(job.authorization_url);
+      const history = ride.last_sync?.mode === "history" ? ride.last_sync : null;
+      const historyLabel = history?.has_more ? "Continue importing older rides" : "Import older rides";
+      const summary = ride.last_sync;
+      return `
+        <section class="connection-archive" data-role="ride-setup">
+          <p class="connection-copy">Use the official, checksum-verified <code>ride</code> app. Sign in on Ride with GPS in the browser profile you choose; no API key or password is entered here.</p>
+          ${!ride.installed ? '<p class="connection-note">Install and connect downloads the official CLI into this private workspace (about 60–105 MB).</p>' : ""}
+          ${summary ? `<p class="connection-health">Last batch: ${Number(summary.imported || 0)} new, ${Number(summary.updated || 0)} updated, ${Number(summary.existing || 0)} unchanged.${summary.has_more ? " More history is available." : ""}</p>` : ""}
+          ${job.message && job.status !== "idle" ? `<p class="connection-setup-status" role="status">${escapeHtml(job.message)}</p>` : ""}
+          <div class="connection-actions">
+            ${authorizationUrl && running ? `<a class="primary" data-role="ride-authorization" href="${escapeHtml(authorizationUrl)}" target="_blank" rel="noreferrer noopener">Open Ride with GPS sign-in</a><button type="button" data-action="ride-cancel">Cancel sign-in</button>` : ""}
+            ${running && !authorizationUrl ? '<button type="button" disabled>Working…</button>' : ""}
+            ${!running && !ride.enabled ? `<button type="button" class="primary" data-action="${ride.installed ? "ride-connect" : "ride-install"}">${ride.installed ? "Connect Ride with GPS" : "Install and connect"}</button>` : ""}
+            ${!running && ride.enabled ? '<button type="button" class="primary" data-action="ride-sync">Sync recent rides</button>' : ""}
+            ${!running && ride.installed ? '<button type="button" data-action="ride-reauth">Reconnect / choose account</button><button type="button" data-action="ride-check">Check</button>' : ""}
+            ${!running && ride.enabled ? `<button type="button" data-action="ride-history">${historyLabel}</button><button type="button" data-action="ride-disable">Stop syncing</button>` : ""}
+          </div>
+          <p class="connection-note">Older history imports in resumable batches. Stopping sync keeps your imported rides and leaves the vendor's sign-in unchanged.</p>
+        </section>`;
+    }
+
     function renderConnectionCard(provider) {
       const fields = Array.isArray(provider.fields) ? provider.fields : [];
       const issues = Array.isArray(provider.issues) ? provider.issues : [];
@@ -8273,6 +8335,7 @@ HTML_TEMPLATE = """<!doctype html>
           ${noteItems.map((item) => `<p class="connection-note">${escapeHtml(item)}</p>`).join("")}
           ${healthItems.map((item) => `<p class="connection-health">${escapeHtml(item)}</p>`).join("")}
           ${renderStravaArchiveSetup(provider)}
+          ${renderRideWithGPSSetup(provider)}
           ${fields.length ? `
             <form class="connection-form">
               ${fields.map((field) => connectionFieldInput(provider, field)).join("")}
@@ -8280,7 +8343,7 @@ HTML_TEMPLATE = """<!doctype html>
           ${steps.length ? `<p class="connection-steps">${escapeHtml(steps.join(" "))}</p>` : ""}
           <div class="connection-actions">
             ${fields.length ? '<button type="button" class="primary" data-action="save">Save</button>' : ""}
-            ${provider.test_available ? '<button type="button" data-action="test">Check</button>' : ""}
+            ${provider.test_available && provider.key !== "ridewithgps" ? '<button type="button" data-action="test">Check</button>' : ""}
           </div>
         </article>`;
     }
@@ -8288,7 +8351,7 @@ HTML_TEMPLATE = """<!doctype html>
     function renderConnections() {
       const root = document.getElementById("connections-root");
       if (!root) return;
-      const providers = state.connections?.providers || [];
+      const providers = [...(state.connections?.providers || [])].sort((a, b) => Number(b.key === "ridewithgps") - Number(a.key === "ridewithgps"));
       if (!providers.length) {
         root.innerHTML = '<div class="connection-empty">No provider data available.</div>';
         return;
@@ -8297,7 +8360,7 @@ HTML_TEMPLATE = """<!doctype html>
         <section class="connection-section">
           <div class="connection-section-head">
             <h3>Available now</h3>
-            <span>${providers.length} local source${providers.length === 1 ? "" : "s"}</span>
+            <span>${providers.length} source${providers.length === 1 ? "" : "s"}</span>
           </div>
           <div class="connection-grid">${providers.map(renderConnectionCard).join("")}</div>
         </section>`;
@@ -8308,6 +8371,51 @@ HTML_TEMPLATE = """<!doctype html>
     async function refreshConnections() {
       await loadConnections();
       renderConnections();
+    }
+
+    function queueRideSetupPoll() {
+      if (state.rideSetupPollTimer) window.clearTimeout(state.rideSetupPollTimer);
+      state.rideSetupPollTimer = window.setTimeout(loadRideSetupStatus, 750);
+    }
+
+    async function loadRideSetupStatus() {
+      if (!state.writeToken) return;
+      try {
+        const response = await fetch(RIDE_SETUP_API, {
+          headers: apiHeaders({ "accept": "application/json" }),
+          cache: "no-store"
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        updateWriteToken(payload);
+        const wasRunning = Boolean(state.rideSetup?.running);
+        state.rideSetup = payload;
+        if (payload.running) queueRideSetupPoll();
+        else if (wasRunning) {
+          await loadConnections();
+          setStatus(payload.message || "Ride with GPS setup finished.");
+        }
+        if (state.view === "connections") renderConnections();
+      } catch (error) {
+        state.rideSetup = { status: "failed", running: false, message: error.message || "Setup status unavailable." };
+        if (state.view === "connections") renderConnections();
+      }
+    }
+
+    async function rideSetupAction(action, options = {}) {
+      if (!state.writeToken) await loadConnections();
+      const response = await fetch(RIDE_SETUP_API, {
+        method: "POST",
+        headers: apiHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ action, ...options })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      updateWriteToken(payload);
+      state.rideSetup = payload;
+      renderConnections();
+      if (payload.running) queueRideSetupPoll();
+      else await refreshConnections();
     }
 
     async function saveConnection(providerKey, card) {
@@ -8501,6 +8609,21 @@ HTML_TEMPLATE = """<!doctype html>
         card.querySelector('[data-action="upload-strava-archive"]')?.addEventListener("click", () => {
           uploadStravaArchive(card).catch((error) => setStatus(error.message || error));
         });
+        const rideActions = {
+          "ride-install": () => rideSetupAction("connect", { install: true }),
+          "ride-connect": () => rideSetupAction("connect"),
+          "ride-reauth": () => rideSetupAction("connect", { reauth: true }),
+          "ride-check": () => rideSetupAction("check"),
+          "ride-disable": () => rideSetupAction("disable"),
+          "ride-cancel": () => rideSetupAction("cancel"),
+          "ride-sync": () => startSync(),
+          "ride-history": () => startSync({ ride_history: true }),
+        };
+        for (const [action, callback] of Object.entries(rideActions)) {
+          card.querySelector(`[data-action="${action}"]`)?.addEventListener("click", () => {
+            Promise.resolve(callback()).catch((error) => setStatus(error.message || error));
+          });
+        }
       });
     }
 
@@ -10086,16 +10209,18 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function renderActualRideLink(day) {
-      const text = day.actual || "No synced Strava ride yet.";
-      const url = primaryActivity(day)?.strava_url || "";
+      const text = day.actual || "No synced ride yet.";
+      const activity = primaryActivity(day);
+      const url = activity?.source_url || activity?.strava_url || "";
       if (!url || !day.has_synced_ride) return escapeHtml(text);
       return `<a class="actual-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
     }
 
     function renderWeekStravaLink(day) {
-      const url = primaryActivity(day)?.strava_url || "";
+      const activity = primaryActivity(day);
+      const url = activity?.source_url || activity?.strava_url || "";
       if (!url || !day.has_synced_ride) return "";
-      return `<p class="week-day-strava"><a class="actual-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Strava</a></p>`;
+      return `<p class="week-day-strava"><a class="actual-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(activity?.source_label || "Strava")}</a></p>`;
     }
 
     function renderPlanExecution(day) {
@@ -10168,8 +10293,9 @@ HTML_TEMPLATE = """<!doctype html>
       ].filter(Boolean).join(" / ");
       const labels = (activity.labels || []).map((item) => item.label).filter(Boolean);
       const reaction = activity.reaction || "";
-      const activityTitle = activity.strava_url
-        ? `<a href="${escapeHtml(activity.strava_url)}" target="_blank" rel="noreferrer">${escapeHtml(activity.name || "Activity")}</a>`
+      const activityUrl = activity.source_url || activity.strava_url;
+      const activityTitle = activityUrl
+        ? `<a href="${escapeHtml(activityUrl)}" target="_blank" rel="noreferrer">${escapeHtml(activity.name || "Activity")}</a>`
         : `<strong>${escapeHtml(activity.name || "Activity")}</strong>`;
       return `
         <article class="activity-card">
@@ -10432,7 +10558,7 @@ HTML_TEMPLATE = """<!doctype html>
         if (dayByDate(anchor)) selectDate(anchor, { switchWeek: true, openRide: true });
       });
       document.getElementById("next-day").addEventListener("click", () => moveDay(1));
-      document.getElementById("sync-button").addEventListener("click", startSync);
+      document.getElementById("sync-button").addEventListener("click", () => startSync());
       document.getElementById("more-actions-button").addEventListener("click", toggleActionMenu);
       document.getElementById("open-connections").addEventListener("click", () => {
         setView("connections");
@@ -10466,6 +10592,7 @@ HTML_TEMPLATE = """<!doctype html>
 
     async function loadRuntimeState() {
       await Promise.all([loadNotes(), loadSyncStatus(), loadConnections()]);
+      if (state.view === "connections") await loadRideSetupStatus();
       renderCalendar();
       renderWeek();
       renderCoachRail();
@@ -11439,6 +11566,14 @@ def _activity_detail(
             strava_id = int(provider_id)
         except (TypeError, ValueError):
             pass
+    strava_url = f"https://www.strava.com/activities/{strava_id}" if strava_id is not None else None
+    source_url = strava_url
+    source_label = "Strava" if strava_url else "Local recording" if provider == "recording" else None
+    raw = activity.get("raw") if isinstance(activity.get("raw"), dict) else {}
+    ridewithgps_id = str(raw.get("source_activity_id") or "")
+    if provider == "recording" and raw.get("source_provider") == "ridewithgps" and re.fullmatch(r"[1-9][0-9]{0,31}", ridewithgps_id):
+        source_url = f"https://ridewithgps.com/trips/{ridewithgps_id}"
+        source_label = "Ride with GPS"
     average_watts = _safe_float(activity.get("average_watts"))
     weighted_watts = _safe_float(activity.get("weighted_average_watts"))
     variability_index = (
@@ -11451,7 +11586,9 @@ def _activity_detail(
         "name": _activity_label(activity),
         "sport": activity.get("sport_type") or activity.get("type") or "Activity",
         "start_label": _activity_start_label(activity.get("start_date_local") or activity.get("start_date")),
-        "strava_url": f"https://www.strava.com/activities/{strava_id}" if strava_id is not None else None,
+        "strava_url": strava_url,
+        "source_url": source_url,
+        "source_label": source_label,
         "duration_label": _duration_label(activity.get("moving_time_s")),
         "miles_label": _miles_label(activity.get("distance_m")),
         "distance_label": _distance_label(activity.get("distance_m")),

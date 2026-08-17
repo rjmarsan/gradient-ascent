@@ -16,7 +16,7 @@ The generated workspace `.gitignore` excludes:
 - official Strava archive drops
 - official Garmin Connect exports and normalized daily recovery files
 - Apple Health exports and normalized health files
-- provider-neutral companion sync manifests under `integrations/`
+- Ride with GPS imports and provider-neutral companion sync manifests under `integrations/`
 - logs
 - private workspace metadata under `.codex/cache/`
 - the writable incremental Training Center cache under `derived/.cache/`
@@ -25,9 +25,28 @@ Generated summaries and dashboards can also contain sensitive training informati
 
 ## Credentials
 
-Gradient Ascent does not implement provider login or OAuth. It does not request, read, validate, or persist provider passwords, API keys, client secrets, refresh tokens, session cookies, or MFA codes.
+Gradient Ascent does not implement its own provider OAuth client or credential
+store. It does not request, read, validate, or persist provider passwords, API keys,
+client secrets, refresh tokens, session cookies, or MFA codes.
 
-Supported source paths consume local files supplied by the athlete:
+The optional Ride with GPS connection invokes the actual, checksum-verified
+[official `ride` CLI](https://github.com/ridewithgps/ride-cli/tree/v0.1.0). The vendor
+CLI handles browser OAuth, token refresh, and its own credential storage. Gradient
+Ascent does not open or copy that configuration file. It leaves the vendor's default
+configuration in use unless the rider chooses an existing private configuration
+directory. The vendor CLI's on-disk store is not represented as an OS keychain.
+Protect it as described by the vendor, separately from your athlete workspace.
+
+Connection setup requires an explicit action. It provides a validated sign-in URL
+for the rider to click, rather than automatically choosing a browser profile. Read-only
+requests use the canonical `https://ridewithgps.com` origin and bounded trip-list
+and trip-detail routes. An explicit account check reads the current user solely to
+bind the workspace to a salted account fingerprint; names, email addresses, and
+account IDs are not shown in connection status. A different account cannot silently
+replace that binding. The vendor API command may also perform its periodic GitHub
+release check. Using the vendor CLI does not imply endorsement of Gradient Ascent.
+
+The following source paths still consume local files supplied by the athlete:
 
 - official Strava account archive
 - standalone FIT, TCX, or GPX activity recording
@@ -36,7 +55,22 @@ Supported source paths consume local files supplied by the athlete:
 - training-plan CSV or XLSX
 - a versioned, provider-neutral local companion sync manifest
 
-The connection registry stores only non-secret local export paths in `connections/config.json`. Optional companion applications are separate projects: any provider authentication or network access remains entirely outside Gradient Ascent. Companion manifests contain only explicitly allowed, compact activity and recovery fields; credential-like keys, unknown fields, symbolic links, and provider impersonation are rejected. Imported manifests are kept in the private, Git-ignored `integrations/` directory.
+The connection registry stores non-secret local export paths and Ride with GPS
+settings such as enabled state, executable/configuration paths, lookback, account
+fingerprint, and aggregate sync progress. Normal refresh contacts Ride with GPS only
+after the rider enables that connection. `refresh --local-only` remains offline;
+merely loading the dashboard or requesting `ride status` does not contact a provider.
+`ride disable` stops future automatic sync but preserves local history and the
+vendor's independent login. To revoke the vendor session, use the vendor's own
+account/CLI controls.
+
+Optional companion applications are separate projects: their provider authentication
+and network access remain outside Gradient Ascent. Companion manifests contain only
+explicitly allowed, compact activity and recovery fields; credential-like keys,
+unknown fields, symbolic links, and provider impersonation are rejected. Imported
+manifests are kept in the private, Git-ignored `integrations/` directory. Ride with
+GPS consent does not authorize live Garmin or Strava access, and no unofficial live
+connector for either is bundled.
 
 ## Local server
 

@@ -15,12 +15,12 @@ Center's **Ask Coach** button opens a new conversation in this same private fold
 ## Layout
 
 - `plan/`: profile, goals, events, plan, notes, equipment, and corrections.
-- `connections/`: non-secret local import configuration.
+- `connections/`: non-secret local import and enabled-sync configuration.
 - `strava/`: activity index, laps, and streams.
 - `recordings/`: normalized activities, laps, and streams from loose FIT, TCX, or GPX files.
 - `garmin/`: daily recovery imported from Garmin Connect files.
 - `apple_health/`: workouts and recovery imported from Apple Health.
-- `integrations/`: private, provider-neutral manifests imported from optional local companions.
+- `integrations/`: private Ride with GPS imports and provider-neutral companion manifests.
 - `canonical/`: source-normalized records.
 - `derived/`: rebuilt summaries and Training Center assets.
 - `context/`: narrative coaching context that should survive across tasks.
@@ -34,6 +34,26 @@ Center's **Ask Coach** button opens a new conversation in this same private fold
 .codex/bin/gradient-ascent refresh
 .codex/bin/gradient-ascent serve-training-center --port 8787
 ```
+
+Normal refresh contacts Ride with GPS only if you explicitly enabled that connection.
+Use `refresh --local-only` for an offline rebuild. In the Training Center's
+**Connections** view, choose **Install and connect** or **Connect**, then click the
+sign-in link in your chosen browser profile. The actual official `ride` CLI owns
+OAuth and tokens; never put credentials in this workspace or a coaching prompt.
+
+```bash
+.codex/bin/gradient-ascent ride setup --install
+.codex/bin/gradient-ascent ride status
+.codex/bin/gradient-ascent ride check
+.codex/bin/gradient-ascent ride sync --history
+.codex/bin/gradient-ascent ride disable
+```
+
+`--install` explicitly approves installing the verified vendor CLI. `ride status` is
+offline; **Check** tests the vendor session. Repeat **Import older rides** or
+`ride sync --history` until the bounded scan reports completion. **Stop syncing** or
+`ride disable` preserves imported rides and the vendor's independent login. Garmin
+and Strava remain separate local-file/optional-companion sources.
 
 Optional imports:
 

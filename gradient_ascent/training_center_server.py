@@ -41,6 +41,7 @@ CONNECTION_PROVIDER_RE = re.compile(r"^/api/connections/([a-z_]+)/?$")
 CONNECTION_TEST_RE = re.compile(r"^/api/connections/([a-z_]+)/test/?$")
 STRAVA_ARCHIVE_UPLOAD_PATH = "/api/connections/strava/archive"
 ACTIVITY_RECORDING_UPLOAD_PATH = "/api/activity-recordings"
+RIDE_SETUP_PATH = "/api/connections/ridewithgps/setup"
 MAX_BODY_BYTES = 1_000_000
 MAX_STRAVA_ARCHIVE_BYTES = 20 * 1024 * 1024 * 1024
 MAX_ACTIVITY_RECORDING_BYTES = 512 * 1024 * 1024
@@ -151,11 +152,26 @@ def _activity_recording_upload_name(value: str) -> str:
     return f"{stem or 'activity-recording'}{suffix}"
 
 
-def _sync_steps(
+def _ride_is_configured(data_dir: Path) -> bool:
+    from .ride_connection import load_ride_settings
+
+    return bool(load_ride_settings(data_dir)["enabled"])
+
+
+def _workspace_refresh_steps(
     data_dir: Path,
     expected_identity: tuple[int, int] | None = None,
+    *,
+    configured: bool = False,
+    history: bool = False,
+    restart_history: bool = False,
 ) -> list[tuple[str, list[str], bool]]:
-    command = [sys.executable, "-m", "gradient_ascent.refresh", "--data-dir", str(data_dir)]
+    module = "gradient_ascent.configured_refresh" if configured else "gradient_ascent.refresh"
+    command = [sys.executable, "-m", module, "--data-dir", str(data_dir)]
+    if history:
+        command.append("--ride-history")
+    if restart_history:
+        command.append("--restart-history")
     if expected_identity is not None:
         command.extend(
             [
@@ -165,15 +181,57 @@ def _sync_steps(
                 str(expected_identity[1]),
             ]
         )
-    return [("Workspace rebuild", command, False)]
+    name = "Ride with GPS history + workspace rebuild" if history else "Ride with GPS + workspace rebuild" if configured else "Workspace rebuild"
+    return [(name, command, False)]
+
+
+def _sync_steps(
+    data_dir: Path,
+    expected_identity: tuple[int, int] | None = None,
+) -> list[tuple[str, list[str], bool]]:
+    return _workspace_refresh_steps(data_dir, expected_identity, configured=_ride_is_configured(data_dir))
+
+
+def _visible_sync_command(command: list[str], data_dir: Path) -> list[str]:
+    if not command:
+        return []
+    visible = [Path(command[0]).name]
+    for argument in command[1:]:
+        if argument == str(data_dir):
+            visible.append("<workspace>")
+        elif Path(argument).is_absolute():
+            visible.append("<local-path>")
+        else:
+            visible.append(argument)
+    return visible
+
+
+def _visible_sync_output(command: list[str], returncode: int, output: str) -> tuple[int, str]:
+    if command[1:3] == ["-m", "gradient_ascent.configured_refresh"]:
+        if returncode == 0:
+            from .configured_refresh import validate_aggregate_refresh_result
+
+            try:
+                value = validate_aggregate_refresh_result(json.loads(output))
+                return 0, json.dumps(value, sort_keys=True, separators=(",", ":"))
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        return returncode or 1, "Ride with GPS refresh failed. Check Connections and retry."
+    if command[1:3] == ["-m", "gradient_ascent.refresh"]:
+        return returncode, "Workspace refresh complete" if returncode == 0 else "Local workspace rebuild failed."
+    # Separately installed companion launchers own their aggregate-only output.
+    return returncode, output
 
 
 def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandler]:
+    from .ride_setup import RideSetupJobs
+
     derived_dir = (data_dir / "derived").resolve()
     notes_path = (data_dir / "plan" / "daily_notes.json").resolve()
     write_token = secrets.token_urlsafe(32)
     workspace_id = _workspace_instance_id(data_dir)
     workspace_generation = workspace_identity(data_dir)
+    ride_setup_jobs = RideSetupJobs(data_dir, workspace_generation)
     lock = Lock()
     sync_lock = Lock()
     static_cache_lock = Lock()
@@ -217,7 +275,8 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
         return env
 
     def _run_sync_step(name: str, command: list[str], *, continue_on_error: bool = False) -> dict[str, Any]:
-        _append_sync_log(f"[{_timestamp()}] {name}: {' '.join(command)}")
+        visible_command = _visible_sync_command(command, data_dir)
+        _append_sync_log(f"[{_timestamp()}] {name}: {' '.join(visible_command)}")
         result = subprocess.run(
             command,
             cwd=data_dir,
@@ -227,35 +286,40 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
             stderr=subprocess.STDOUT,
             check=False,
         )
-        _append_sync_log(result.stdout or "")
+        returncode, output = _visible_sync_output(command, result.returncode, result.stdout or "")
+        _append_sync_log(output)
         step = {
             "name": name,
-            "command": command,
-            "returncode": result.returncode,
-            "ok": result.returncode == 0,
-            "continued": bool(continue_on_error and result.returncode != 0),
+            "command": visible_command,
+            "returncode": returncode,
+            "ok": returncode == 0,
+            "continued": bool(continue_on_error and returncode != 0),
             "completed_at": _timestamp(),
-            "output": result.stdout or "",
+            "output": output,
         }
         with sync_lock:
             sync_state.setdefault("steps", []).append(step)
         return step
 
-    def _run_sync_job() -> None:
+    def _run_sync_job(*, ride_history: bool = False, restart_history: bool = False, local_only: bool = False) -> None:
         _update_sync_state(
             status="running",
             running=True,
             ok=None,
-            message="Rebuilding local coaching data and the Training Center.",
+            message="Refreshing enabled sources and rebuilding the Training Center.",
             started_at=_timestamp(),
             completed_at=None,
             steps=[],
             log_tail=[],
         )
         failure: str | None = None
-        steps = _sync_steps(data_dir, workspace_generation)
-
         try:
+            if ride_history:
+                steps = _workspace_refresh_steps(data_dir, workspace_generation, configured=True, history=True, restart_history=restart_history)
+            elif local_only:
+                steps = _workspace_refresh_steps(data_dir, workspace_generation)
+            else:
+                steps = _sync_steps(data_dir, workspace_generation)
             for name, command, continue_on_error in steps:
                 step = _run_sync_step(name, command, continue_on_error=continue_on_error)
                 if step["ok"]:
@@ -263,7 +327,7 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
                 failure = f"{name} failed with exit code {step['returncode']}."
                 break
         except Exception as exc:  # pragma: no cover - defensive server guard
-            failure = f"Sync worker failed: {exc}"
+            failure = f"Sync worker failed ({type(exc).__name__}). Check Connections and retry."
             _append_sync_log(f"[{_timestamp()}] ERROR: {failure}")
 
         if failure:
@@ -339,6 +403,13 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
             if parsed.path == "/api/connections":
                 self._send_json(_write_payload(connections_payload(data_dir)))
                 return
+            if parsed.path == RIDE_SETUP_PATH:
+                write_error = self._write_error()
+                if write_error:
+                    self._send_json({"error": write_error}, status=HTTPStatus.FORBIDDEN)
+                    return
+                self._send_json(_write_payload(ride_setup_jobs.snapshot()))
+                return
             static_path = "/training_center.html" if parsed.path == "/" else parsed.path
             if self._send_compressed_static(static_path):
                 return
@@ -393,6 +464,25 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
                 self._send_json({"error": write_error}, status=HTTPStatus.FORBIDDEN)
                 return
             parsed = urlparse(self.path)
+            if parsed.path == RIDE_SETUP_PATH:
+                from .ride_connection import RideConnectionError
+
+                try:
+                    body = self._read_json_body()
+                    if set(body) - {"action", "install", "reauth"}:
+                        raise ValueError("Only the setup action and consent flags are accepted.")
+                    action = body.get("action")
+                    if action == "cancel":
+                        if set(body) != {"action"}:
+                            raise ValueError("Cancel does not accept setup options.")
+                        payload = ride_setup_jobs.cancel()
+                    else:
+                        payload = ride_setup_jobs.start(action, install=body.get("install", False), reauth=body.get("reauth", False))
+                except (RideConnectionError, ValueError) as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json(_write_payload(payload), status=HTTPStatus.ACCEPTED)
+                return
             if parsed.path == STRAVA_ARCHIVE_UPLOAD_PATH:
                 try:
                     payload = self._import_strava_archive_upload()
@@ -419,6 +509,17 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
                 self._send_json(_write_payload(payload))
                 return
             if parsed.path == "/api/sync":
+                try:
+                    body = self._read_json_body()
+                    if set(body) - {"ride_history", "restart_history", "local_only"} or any(type(value) is not bool for value in body.values()):
+                        raise ValueError("Unknown refresh option.")
+                    if body.get("restart_history") and not body.get("ride_history"):
+                        raise ValueError("Restart requires a history import.")
+                    if body.get("ride_history") and (body.get("local_only") or not _ride_is_configured(data_dir)):
+                        raise ValueError("Connect Ride with GPS before importing older rides.")
+                except (OSError, RuntimeError, ValueError):
+                    self._send_json({"error": "Choose a valid refresh option and check Connections."}, status=HTTPStatus.BAD_REQUEST)
+                    return
                 should_start = False
                 with sync_lock:
                     if not sync_state.get("running"):
@@ -436,6 +537,7 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
                 if should_start:
                     Thread(
                         target=_run_sync_job,
+                        kwargs=body,
                         name="training-center-sync",
                         daemon=True,
                     ).start()
@@ -447,6 +549,9 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
                 provider = test_match.group(1)
                 if provider not in provider_keys():
                     self.send_error(HTTPStatus.NOT_FOUND, "Unknown provider")
+                    return
+                if provider == "ridewithgps":
+                    self._send_json(_write_payload(ride_setup_jobs.start("check")), status=HTTPStatus.ACCEPTED)
                     return
                 self._send_json(_write_payload(check_provider(data_dir, provider)))
                 return

@@ -90,6 +90,9 @@ class ConfigAndInitTest(unittest.TestCase):
             ):
                 self.assertTrue((data_dir / relative).exists(), relative)
             self.assertFalse((data_dir / "connections" / "secrets").exists())
+            ignored = (data_dir / ".gitignore").read_text().splitlines()
+            self.assertIn(".runtime/", ignored)
+            self.assertIn("connections/ridewithgps.json", ignored)
             self.assertEqual(
                 json.loads((data_dir / "plan" / "coach_notes.json").read_text()),
                 {"notes": [], "version": 1},

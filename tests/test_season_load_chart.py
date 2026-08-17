@@ -114,7 +114,7 @@ class SeasonLoadChartTest(unittest.TestCase):
         self.assertGreaterEqual(result["max_tss"], 700)
         self.assertLess(result["max_tss"], 9000)
 
-    def test_chart_is_a_real_area_with_range_band_and_value_tooltips(self):
+    def test_week_budget_labels_preserve_ranges_and_recorded_provenance(self):
         weeks = [
             {
                 "start_date": "2026-01-05",
@@ -143,33 +143,23 @@ class SeasonLoadChartTest(unittest.TestCase):
                 "tss_qualifier": "Calculated · 80.1% power coverage · 1 ride without load",
             },
         ]
-        rendered = self.run_chart(
-            "renderSeasonLoadChart(seasonLoadSeries(weeks,horizon,'2026-01-18'))", weeks=weeks
+        labels = self.run_chart(
+            "seasonLoadSeries(weeks,horizon,'2026-01-18').rows.map(seasonWeekLoadLabel)",
+            weeks=weeks,
         )
-        self.assertIn('class="season-load-chart"', rendered)
-        self.assertIn('class="season-target-band"', rendered)
-        self.assertIn('class="season-recorded-area"', rendered)
-        self.assertIn('class="season-recorded-line"', rendered)
-        self.assertIn("Planned 300–450 TSS (Source target)", rendered)
-        self.assertIn("Planned 400–651 TSS (Modeled prescriptions)", rendered)
-        self.assertIn("Recorded 375 TSS (Source)", rendered)
-        self.assertIn("Recorded 451 TSS so far", rendered)
-        self.assertIn("80.1% power coverage", rendered)
-        self.assertIn("1 ride without load", rendered)
-        self.assertIn("Weekly TSS", rendered)
-        self.assertIn("0 TSS", rendered)
-        self.assertNotIn("Weekly moving hours", rendered)
-        self.assertNotIn("profile-peak", rendered)
-        self.assertNotIn("NaN", rendered)
-        self.assertNotIn("Infinity", rendered)
+        self.assertIn("Planned 300–450 TSS (Source target)", labels[0])
+        self.assertIn("Recorded 375 TSS (Source)", labels[0])
+        self.assertIn("Planned 400–651 TSS (Modeled prescriptions)", labels[1])
+        self.assertIn("Recorded 451 TSS so far", labels[1])
+        self.assertIn("80.1% power coverage", labels[1])
+        self.assertIn("1 ride without load", labels[1])
+        self.assertNotIn("NaN", " ".join(labels))
+        self.assertNotIn("Infinity", " ".join(labels))
 
-    def test_missing_chart_has_no_fabricated_area_and_ranges_are_clipped(self):
-        empty = self.run_chart(
-            "renderSeasonLoadChart(seasonLoadSeries(weeks,horizon,'2026-01-18'))"
-        )
-        self.assertIn("No weekly TSS data", empty)
-        self.assertNotIn('class="season-recorded-area"', empty)
-        self.assertNotIn('class="season-target-band"', empty)
+    def test_missing_week_budget_stays_missing_and_ranges_are_clipped(self):
+        empty = self.run_chart("seasonLoadSeries(weeks,horizon,'2026-01-18')")
+        self.assertEqual(empty["rows"], [])
+        self.assertEqual(self.run_chart("seasonWeekLoadLabel(null)"), "No weekly TSS data")
         weeks = [
             {
                 "start_date": "2026-01-01",
@@ -229,14 +219,14 @@ class SeasonLoadChartTest(unittest.TestCase):
         self.assertEqual((rows[0]["target_min"], rows[0]["target_max"]), (74.5, 74.5))
         self.assertIsNone(rows[1]["target_min"])
         self.assertTrue(all(row["recorded_tss"] is None for row in rows))
-        rendered = self.run_chart(
-            "renderSeasonLoadChart(seasonLoadSeries(weeks,horizon,'2026-01-18'))", weeks=weeks
+        label = self.run_chart(
+            "seasonWeekLoadLabel(seasonLoadSeries(weeks,horizon,'2026-01-18').rows[0])",
+            weeks=weeks,
         )
-        self.assertIn("Planned 75 TSS (Source target)", rendered)
-        self.assertIn("No supported recorded TSS (1 ride without load)", rendered)
-        self.assertNotIn('class="season-recorded-area"', rendered)
+        self.assertIn("Planned 75 TSS (Source target)", label)
+        self.assertIn("No supported recorded TSS (1 ride without load)", label)
 
-    def test_planned_trajectory_uses_the_central_estimate_not_the_upper_bound(self):
+    def test_coach_budget_keeps_central_target_range_and_ceiling_separate(self):
         weeks = [
             {
                 "start_date": "2026-01-05",
@@ -276,16 +266,14 @@ class SeasonLoadChartTest(unittest.TestCase):
         series = self.run_chart("seasonLoadSeries(weeks,horizon,'2026-01-18')", weeks=weeks)
         self.assertEqual([row["target_value"] for row in series["rows"]], [441, 400, None])
         self.assertEqual([len(run) for run in series["trajectory_runs"]], [2])
-        rendered = self.run_chart(
-            "renderSeasonLoadChart(seasonLoadSeries(weeks,horizon,'2026-01-18'))", weeks=weeks
+        label = self.run_chart(
+            "seasonWeekLoadLabel(seasonLoadSeries(weeks,horizon,'2026-01-18').rows[0])",
+            weeks=weeks,
         )
-        expected_y = round(108 - 441 / series["max_tss"] * 103, 2)
-        self.assertIn(f'class="season-target-line" d="M0,{expected_y}', rendered)
-        self.assertIn("central estimate 441 TSS", rendered)
-        self.assertIn("planning ceiling 5,000 TSS", rendered)
+        self.assertIn("central estimate 441 TSS", label)
+        self.assertIn("planning ceiling 5,000 TSS", label)
         self.assertEqual(series["rows"][0]["target_max"], 480)
         self.assertLess(series["max_tss"], 5000)
-        self.assertIn('class="season-target-band"', rendered)
 
     def test_season_provenance_counts_explicit_budgets_and_incomplete_recorded_weeks(self):
         weeks = [
@@ -357,21 +345,23 @@ class SeasonLoadChartTest(unittest.TestCase):
             },
         )
         self.assertIn("coach budgets", result["note"])
-        self.assertIn("intentional target range", result["note"])
+        self.assertIn("target range", result["note"])
         self.assertNotIn("weekly hours", result["note"])
         self.assertIn("not measured fitness", result["note"])
 
-    def test_visible_chart_key_uses_tss_and_keeps_hours_in_week_totals(self):
+    def test_visible_chart_key_uses_ctl_atl_and_keeps_hours_in_week_totals(self):
         template = training_center.HTML_TEMPLATE
         for expected in (
-            "<strong>Weekly TSS</strong>",
-            "Planned budget",
-            "Intentional range",
-            "Recorded load",
+            "CTL",
+            "ATL",
+            "42-day",
+            "7-day",
+            "TSS/day",
             "<span>Scheduled hours</span>",
             "<span>Recorded hours</span>",
         ):
             self.assertTrue(expected in template, expected)
+        self.assertNotIn("<strong>Weekly TSS</strong>", template)
 
     def test_legacy_hours_and_rough_daily_totals_remain_chart_gaps(self):
         weeks = []
@@ -399,10 +389,19 @@ class SeasonLoadChartTest(unittest.TestCase):
         self.assertEqual([row["target_value"] for row in result["rows"]], [None, None, None, 100])
         self.assertEqual([row["recorded_tss"] for row in result["rows"]], [75, 75, 75, 75])
         self.assertEqual([len(run) for run in result["target_runs"]], [1])
-        rendered = self.run_chart(
-            "renderSeasonLoadChart(seasonLoadSeries(weeks,horizon,'2026-02-08'))", weeks=weeks
+        labels = self.run_chart(
+            "seasonLoadSeries(weeks,horizon,'2026-02-08').rows.map(seasonWeekLoadLabel)",
+            weeks=weeks,
         )
-        self.assertIn("TSS budget not set", rendered)
+        self.assertTrue(all("No historical TSS target" in label for label in labels[:3]))
+        self.assertTrue(all("TSS budget not set" not in label for label in labels[:3]))
+        self.assertIn("Planned 90–110 TSS", labels[3])
+        active_labels = self.run_chart(
+            "seasonLoadSeries(weeks,horizon,'2026-01-12').rows.map(seasonWeekLoadLabel)",
+            weeks=weeks,
+        )
+        self.assertIn("No historical TSS target", active_labels[0])
+        self.assertTrue(all("TSS budget not set" in label for label in active_labels[1:3]))
 
     def test_browser_rounds_tss_without_rounding_incomplete_coverage_to_100(self):
         template = training_center.HTML_TEMPLATE

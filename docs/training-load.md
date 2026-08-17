@@ -63,17 +63,59 @@ original-file retention is limited to 64 MiB per file and does not reduce the
 existing upload limit. Use `gradient-ascent refresh --local-only` for an explicitly
 offline rebuild.
 
+## CTL and ATL recorded-load trends
+
+The season chart uses recorded daily TSS to model longer-term Chronic Training Load
+(CTL) and shorter-term Acute Training Load (ATL). The method
+`ctl_atl_daily_ewma_v1` follows the current TrainingPeaks Help Center formulas:
+
+```text
+CTL_today = CTL_yesterday + (recorded_TSS_today - CTL_yesterday) / 42
+ATL_today = ATL_yesterday + (recorded_TSS_today - ATL_yesterday) / 7
+```
+
+Both values are expressed in TSS/day. They are exponentially weighted daily load
+averages, not simple 42-day or seven-day means. A date's CTL and ATL include the
+recorded load available for that date. They are useful training-load models, not
+direct measurements of fitness, fatigue, readiness, or medical status. Different
+source history, thresholds, initialization, and implementation conventions can
+produce different numbers from a vendor's chart; Gradient Ascent does not promise
+exact TrainingPeaks parity. See the official [CTL](https://help.trainingpeaks.com/hc/en-us/articles/204071884-Fitness-CTL-)
+and [ATL](https://help.trainingpeaks.com/hc/en-us/articles/204071894-Fatigue-ATL) definitions.
+
+The calculation starts from zero immediately before the first supported recorded
+score, including a genuine zero score. This is a disclosed mathematical starting
+point, not an estimate of the athlete's earlier fitness. All available earlier
+history is processed before the visible season is selected; changing the displayed
+date range does not reset the model. The remaining influence of the zero seed is
+tracked, and limited history stays qualified. More complete historical recordings
+can improve the model. [TrainingPeaks initialization guidance](https://help.trainingpeaks.com/hc/en-us/articles/230903988-Estimate-Starting-Fitness-CTL)
+
+A day without a recording contributes zero **recorded** TSS, which is not proof
+that the athlete rested. A known unscored activity keeps its score missing; a
+partially scored day contributes only its available subtotal. The model preserves
+a known-incomplete-history warning even after those days leave the recent 7- or
+42-day window. It does not invent the missing load or alter recorded TSS.
+
+The model's `through_date` identifies the last build date. Today's value can be a
+recorded-so-far value, and an older open dashboard does not gain new observations
+just because the clock advances. Refresh to rebuild. There is no future CTL/ATL
+projection in this version: weekly coach budgets are not divided across days, and
+planned sessions are not counted as completed training.
+
 ## Planned load
 
-The season chart follows the actual plan's weekly TSS target or modeled prescribed
-load, preserves its range, and overlays recorded weekly TSS. The selected-week
-readout and tooltips distinguish source targets, coach decisions, fully prescribed
-session calculations, recorded scores, and incomplete load. TSS is training load,
-not measured fitness or a quota to fill.
-Weeks without supported scores remain gaps, genuine zero scores remain zero,
-future recordings are not projected, and the current week is labeled as in
-progress. The underlying values retain their precision. Week totals retain the
-scheduled-versus-recorded comparison. A day with recorded activity shows recorded
+Weekly coaching budgets remain separate from CTL/ATL. Week totals and tooltips
+distinguish source targets, coach decisions, fully prescribed session calculations,
+recorded scores, and incomplete load. TSS is training load, not measured fitness
+or a quota to fill. Missing scores stay missing, genuine zero scores remain zero,
+and the underlying values retain their precision. Current and future weeks still
+identify missing or review-needed budgets. A past week that never had a budget
+instead describes its evidence: **Recorded**, **Load incomplete**, **No scored load**,
+or **No recordings**. An existing stale budget still needs review; this is not
+permission to invent historical targets.
+
+A day with recorded activity shows recorded
 stats in its Week card instead of repeating the original plan summary; unrecorded
 days keep their scheduled stats. Meaningful missing-load warnings and full score
 provenance remain available.

@@ -28,6 +28,67 @@ def coach_budget(**changes):
 
 
 class TssBudgetDashboardTest(unittest.TestCase):
+    def test_unbudgeted_past_weeks_describe_recorded_evidence(self):
+        base = {
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-16",
+            "status_meaningful": "above",
+            "target_hours": {"min": 8, "max": 11},
+        }
+        cases = (
+            ({"estimated_tss": 458.3, "activity_count": 4}, "recorded_history"),
+            ({"estimated_tss": 0, "activity_count": 1}, "recorded_history"),
+            (
+                {"estimated_tss": 70, "estimated_tss_relevant_partial_activity_count": 1},
+                "load_incomplete",
+            ),
+            (
+                {
+                    "estimated_tss": None,
+                    "activity_count": 1,
+                    "estimated_tss_missing_activity_count": 1,
+                },
+                "load_incomplete",
+            ),
+            ({"estimated_tss": None, "activity_count": 1}, "recorded_unscored"),
+            ({"estimated_tss": None, "activity_count": 0}, "no_recordings"),
+        )
+        for totals, expected in cases:
+            with self.subTest(expected=expected, totals=totals):
+                row = {**base, "totals": totals}
+                self.assertEqual(
+                    training_center._week_display_status(row, [], today=date(2026, 8, 17)),
+                    expected,
+                )
+                self.assertEqual(
+                    training_center._week_display_status(row, [], today=date(2026, 8, 16)),
+                    "budget_missing",
+                )
+        self.assertEqual(training_center._status_label("recorded_history"), "Recorded")
+        self.assertEqual(training_center._status_label("recorded_unscored"), "No scored load")
+        self.assertEqual(training_center._status_label("no_recordings"), "No recordings")
+
+    def test_historical_stale_budget_keeps_review_or_valid_source_comparison(self):
+        row = {
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-16",
+            "totals": {"estimated_tss": 320},
+        }
+        stale = coach_budget(state="needs_review")
+        missing = training_center._planned_load_for_week([], coach_budget=stale)
+        self.assertEqual(
+            training_center._week_display_status(row, [], period="completed", planned_load=missing),
+            "budget_review",
+        )
+        source = training_center._planned_load_for_week(
+            [], tss_target={"min": 300, "max": 350}, coach_budget=stale
+        )
+        self.assertEqual(
+            training_center._week_display_status(row, [], period="completed", planned_load=source),
+            "within_budget",
+        )
+        self.assertTrue(source["budget_review_required"])
+
     def test_week_uses_the_authored_budget_without_converting_hours(self):
         days = [{"planned_load": training_center._planned_load_for_day("2 hours Z2", [])}]
         load = training_center._planned_load_for_week(

@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .activity_titles import is_placeholder_title, select_activity_title
 from .coach_notes import coach_notes_by_date
@@ -27,6 +28,7 @@ from .planned_load import (
 from .planned_workouts import load_structured_workouts
 from .progress import build_progress_artifact
 from .storage import ensure_text_line, read_json, write_json, write_text
+from .training_load import build_training_load
 from .tss_budgets import load_tss_budgets
 from .workspace_lock import cross_process_locking_available, workspace_lock
 
@@ -6523,9 +6525,8 @@ HTML_TEMPLATE = """<!doctype html>
 
     .season-chart-key strong { color: #344e40; font: inherit; font-weight: 700; }
     .season-chart-key span { display: inline-flex; align-items: center; gap: 5px; }
-    .season-chart-key i { width: 13px; height: 7px; background: #c7d4c1; border: 1px solid #a6b99e; }
-    .season-chart-key .trajectory-key i { height: 0; border: 0; border-top: 2px solid #789570; background: transparent; }
-    .season-chart-key .recorded-key i { background: #597c65; border-color: #3e6550; }
+    .season-chart-key i { width: 13px; height: 0; border: 0; border-top: 2px solid #3d756e; }
+    .season-chart-key .atl-key i { border-color: #8a719d; }
 
     .season-selection-key {
       display: inline-flex;
@@ -6601,12 +6602,12 @@ HTML_TEMPLATE = """<!doctype html>
 
     .season-chart-grid { stroke: rgba(23, 63, 49, .13); stroke-width: 1; vector-effect: non-scaling-stroke; }
     .season-chart-grid.mid { stroke-dasharray: 2 5; }
-    .season-planned-area { fill: #d4dfcd; fill-opacity: .36; }
-    .season-target-band { fill: #c7d4c1; fill-opacity: .82; }
-    .season-target-line { fill: none; stroke: #789570; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
-    .season-recorded-area { fill: #597c65; fill-opacity: .63; }
-    .season-recorded-line { fill: none; stroke: #315a45; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
-    .season-week-hit { fill: transparent; }
+    .season-ctl-area { fill: #739a8d; fill-opacity: .29; }
+    .season-ctl-line { fill: none; stroke: #3d756e; stroke-width: 1.8; vector-effect: non-scaling-stroke; }
+    .season-atl-line { fill: none; stroke: #8a719d; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .season-ctl-dot { fill: #3d756e; }
+    .season-atl-dot { fill: #8a719d; }
+    .season-day-hit { fill: transparent; }
 
     .season-chart-scale {
       position: absolute;
@@ -6623,6 +6624,7 @@ HTML_TEMPLATE = """<!doctype html>
     .season-chart-scale span { padding: 1px 3px; background: rgba(250, 250, 245, .83); }
     .season-chart-empty { position: absolute; inset: 0 0 15px; display: grid; place-items: center; color: #777e74; font-size: .7rem; pointer-events: none; }
     .season-load-readout { margin: -1px 0 0; color: #667265; font: .53rem "SFMono-Regular", Consolas, "Liberation Mono", monospace; line-height: 1.5; }
+    .season-week-budget-readout { margin: 1px 0 0; color: #667265; font: .6rem "SFMono-Regular", Consolas, "Liberation Mono", monospace; line-height: 1.6; }
 
     .season-toolbar { flex-direction: row; align-items: center; flex-wrap: wrap; padding: 14px 24px; }
     .season-toolbar > div { width: auto; }
@@ -9133,8 +9135,14 @@ HTML_TEMPLATE = """<!doctype html>
         above_budget: "Recorded load finished above the intended budget. Review what the week required.",
         below_budget: "Recorded load finished below the intended budget. No catch-up riding is required.",
         within_budget: "Recorded load finished within the intended budget.",
+        recorded_history: "Recorded load is shown for this past week. No comparable historical TSS budget was authored.",
+        recorded_unscored: "Activities were recorded, but no supported TSS is available for this past week.",
+        no_recordings: "No activities are recorded for this past week. No historical target is assumed.",
         not_measured: "No comparable recorded-load evidence is available for this week."
       };
+      if (status === "load_incomplete" && week.planned_load?.estimated_tss == null) {
+        return "Some recorded load is missing. The available activities are shown without inventing a historical target.";
+      }
       return descriptions[status] || "The plan and recorded activities are loaded for this week.";
     }
 
@@ -10099,6 +10107,7 @@ HTML_TEMPLATE = """<!doctype html>
           recorded_qualifier: String(week.tss_qualifier || ""),
           recorded_partial: week.tss_partial === true,
           to_date: Number.isFinite(todayTime) && start <= todayTime && todayTime < end,
+          completed: Number.isFinite(todayTime) && end <= todayTime,
           future
         };
       }).filter(Boolean).sort((left, right) => left.start_ms - right.start_ms || left.end_ms - right.end_ms);
@@ -10138,7 +10147,7 @@ HTML_TEMPLATE = """<!doctype html>
       const qualify = (label, qualifier) => qualifier ? `${label} (${qualifier})` : label;
       const targetLow = row.target_min === null ? null : seasonTss(row.target_min);
       const targetHigh = row.target_max === null ? null : seasonTss(row.target_max);
-      const target = row.target_min === null ? (row.target_review_required ? "TSS budget needs review" : "TSS budget not set")
+      const target = row.target_min === null ? (row.target_review_required ? "TSS budget needs review" : row.completed ? "No historical TSS target" : "TSS budget not set")
         : qualify(targetLow === targetHigh ? `Planned ${targetLow} TSS`
           : `Planned ${targetLow}–${targetHigh} TSS`, row.target_qualifier);
       const actual = row.recorded_tss === null
@@ -10163,46 +10172,158 @@ HTML_TEMPLATE = """<!doctype html>
         provisional: budgets.filter((row) => row.target_status === "provisional").length,
         missing: series.rows.length - planned.length, recorded: recorded.length,
         incomplete: recorded.filter((row) => row.recorded_partial).length,
-        note: "The line follows coach budgets, source targets, or complete prescribed-session totals. Shading shows an intentional target range; missing budgets remain gaps. TSS is training load, not measured fitness."
+        note: "Weekly summaries retain coach budgets, source targets, complete prescribed-session totals, and any intentional target range. Missing budgets are not invented. TSS is training load, not measured fitness."
       };
     }
 
-    function renderSeasonLoadChart(series) {
+    function performanceLoadSeries(model, layout, today) {
+      const dayMs = 86400000;
+      const dateTime = (value) => {
+        const text = String(value || "");
+        if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(text)) return NaN;
+        const time = Date.parse(`${text}T00:00:00Z`);
+        return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === text ? time : NaN;
+      };
+      const numeric = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1000000 ? value : null;
+      const count = (value) => Number.isInteger(value) && value >= 0 && value <= 100000 ? value : 0;
+      const weight = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+      const spanStart = dateTime(layout?.start_date);
+      const spanEnd = dateTime(layout?.end_date) + dayMs;
+      const todayTime = dateTime(today);
+      const builtThrough = dateTime(model?.through_date);
+      const empty = {
+        rows: [], runs: [], max_load: 25, through_date: null, history_start: null,
+        start_date: layout?.start_date || null, end_date: layout?.end_date || null,
+        unavailable_reason: model?.unavailable_reason === "invalid_daily_history" ? "invalid_daily_history" : null,
+        summary: { available: false, history_incomplete: false }
+      };
+      if (model?.method !== "ctl_atl_daily_ewma_v1" || model?.time_constants?.ctl !== 42 || model?.time_constants?.atl !== 7
+        || !Number.isFinite(spanStart) || !Number.isFinite(spanEnd) || spanEnd <= spanStart
+        || !Number.isFinite(todayTime) || !Number.isFinite(builtThrough)) return empty;
+      const cutoff = Math.min(todayTime, builtThrough);
+      const percent = (time) => 100 * (time - spanStart) / (spanEnd - spanStart);
+      const candidates = (Array.isArray(model.rows) ? model.rows : []).map((row) => {
+        const start = dateTime(row?.date);
+        if (!Number.isFinite(start) || start < spanStart || start >= spanEnd || start > cutoff) return null;
+        let ctl = numeric(row.ctl);
+        let atl = numeric(row.atl);
+        if (ctl === null || atl === null) ctl = atl = null;
+        return {
+          date: row.date, start_ms: start, end_ms: start + dayMs,
+          left: percent(start), right: percent(start + dayMs), center: percent(start + dayMs / 2),
+          ctl, atl, tss_observed: numeric(row.tss_observed), load_applied: numeric(row.load_applied),
+          day_status: ["complete", "partial", "missing", "no_recording"].includes(row.day_status) ? row.day_status : "missing",
+          history_days: count(row.history_days), seed_weight_ctl: weight(row.seed_weight_ctl), seed_weight_atl: weight(row.seed_weight_atl),
+          history_incomplete: row.history_incomplete === true,
+          recent_incomplete_days_42: count(row.recent_incomplete_days_42), recent_incomplete_days_7: count(row.recent_incomplete_days_7),
+          to_date: row.to_date === true && start === todayTime
+        };
+      }).filter(Boolean).sort((left, right) => left.start_ms - right.start_ms);
+      const byDate = new Map();
+      for (const row of candidates) {
+        if (byDate.has(row.date)) {
+          byDate.get(row.date).ctl = null;
+          byDate.get(row.date).atl = null;
+        } else byDate.set(row.date, row);
+      }
+      const rows = [...byDate.values()];
+      const runs = [];
+      let run = [];
+      for (const row of rows) {
+        if (row.ctl === null || (run.length && run.at(-1).end_ms !== row.start_ms)) {
+          if (run.length) runs.push(run);
+          run = [];
+        }
+        if (row.ctl !== null) run.push(row);
+      }
+      if (run.length) runs.push(run);
+      const maximum = rows.reduce((value, row) => Math.max(value, row.ctl || 0, row.atl || 0), 0);
+      const tick = maximum <= 50 ? 10 : maximum <= 200 ? 25 : maximum <= 500 ? 50 : Math.pow(10, Math.floor(Math.log10(maximum))) / 2;
+      return {
+        ...empty, rows, runs, max_load: Math.max(25, Math.ceil(maximum / tick) * tick),
+        through_date: new Date(cutoff).toISOString().slice(0, 10),
+        history_start: Number.isFinite(dateTime(model.history_start)) ? model.history_start : null,
+        summary: {
+          available: model.summary?.available === true,
+          history_incomplete: model.summary?.history_incomplete === true,
+          incomplete_days: count(model.summary?.incomplete_days),
+          prior_unscored_days: count(model.summary?.prior_unscored_days)
+        }
+      };
+    }
+
+    function performanceLoadNumber(value) {
+      return typeof value === "number" && Number.isFinite(value) && value >= 0
+        ? value.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : "--";
+    }
+
+    function performanceLoadLabel(row) {
+      if (!row || row.ctl === null || row.atl === null) return "No recorded CTL/ATL data";
+      const quality = row.history_incomplete ? " · Incomplete history" : "";
+      const seed = row.seed_weight_ctl !== null && row.seed_weight_ctl >= .05 ? " · Zero-seeded" : "";
+      return `CTL ${performanceLoadNumber(row.ctl)} · ATL ${performanceLoadNumber(row.atl)} TSS/day${row.to_date ? " so far" : ""}${quality}${seed}`;
+    }
+
+    function performanceLoadTooltip(row) {
+      const daily = row.day_status === "no_recording" ? "0 recorded TSS; no recording, not confirmed rest"
+        : row.tss_observed === null ? "No supported recorded TSS"
+        : `${seasonTss(row.tss_observed)} recorded TSS${row.day_status === "partial" ? " (available subtotal)" : ""}`;
+      const seed = row.seed_weight_ctl === null || row.seed_weight_atl === null ? ""
+        : ` · Zero-seed influence: CTL ${(100 * row.seed_weight_ctl).toFixed(1)}%, ATL ${(100 * row.seed_weight_atl).toFixed(1)}%`;
+      const missing = row.history_incomplete
+        ? ` · Known incomplete days: ${row.recent_incomplete_days_42} in 42 days, ${row.recent_incomplete_days_7} in 7 days` : "";
+      return `${dayLabel(row.date)} · ${performanceLoadLabel(row)} · ${daily} · End-of-day recorded-load model${seed}${missing}`;
+    }
+
+    function performanceLoadSelectionLabel(series, selectedDate) {
+      const selected = series.rows.find((row) => row.date === selectedDate);
+      if (selected) return `${dayLabel(selected.date)} · ${performanceLoadLabel(selected)}`;
+      const latest = series.runs.at(-1)?.at(-1);
+      if (!latest) return performanceLoadUnavailableLabel(series);
+      if (selectedDate > series.through_date && selectedDate <= series.end_date) {
+        return `Recorded model through ${dayLabel(latest.date)} · ${performanceLoadLabel(latest)} · Future CTL/ATL needs prescribed daily TSS`;
+      }
+      if (selectedDate < series.start_date || selectedDate > series.end_date) {
+        return `${dayLabel(latest.date)} · ${performanceLoadLabel(latest)} · Shown week is outside this season`;
+      }
+      return `No recorded CTL/ATL data for ${dayLabel(selectedDate)}`;
+    }
+
+    function performanceLoadUnavailableLabel(series) {
+      return series.unavailable_reason === "invalid_daily_history"
+        ? "CTL/ATL unavailable — rebuild local insights"
+        : "No recorded CTL/ATL data in this season";
+    }
+
+    function performanceLoadProvenance(series) {
+      return {
+        latest: series.runs.at(-1)?.at(-1) || null,
+        incomplete: series.rows.filter((row) => ["partial", "missing"].includes(row.day_status)).length,
+        note: "CTL and ATL are modeled daily averages of recorded TSS, not measured fitness. All earlier history is used, starting from zero before the first scored day. Empty days contribute zero recorded load, not confirmed rest; incomplete history can understate both curves. Weekly budgets are not divided into invented daily TSS or future curves."
+      };
+    }
+
+    function renderPerformanceLoadChart(series) {
       const width = 1000;
       const baseline = 108;
       const top = 5;
       const x = (percent) => Number((percent * width / 100).toFixed(2));
-      const y = (tss) => Number((baseline - tss / series.max_tss * (baseline - top)).toFixed(2));
-      const points = (run, key) => [
-        [x(run[0].left), y(run[0][key])],
-        ...run.map((row) => [x(row.center), y(row[key])]),
-        [x(run.at(-1).right), y(run.at(-1)[key])]
-      ];
+      const y = (load) => Number((baseline - load / series.max_load * (baseline - top)).toFixed(2));
+      const points = (run, key) => run.map((row) => [x(row.center), y(row[key])]);
       const path = (values) => values.map(([px, py], index) => `${index ? "L" : "M"}${px},${py}`).join(" ");
-      const targets = series.target_runs.map((run) => {
-        const high = points(run, "target_max");
-        const low = points(run, "target_min");
-        return `<path class="season-target-band" d="${path(high)} ${path(low.slice().reverse()).replace(/^M/, "L")} Z"></path>`;
+      const curves = series.runs.map((run) => {
+        const ctl = points(run, "ctl");
+        const atl = points(run, "atl");
+        const dots = run.length === 1 ? `<circle class="season-ctl-dot" cx="${ctl[0][0]}" cy="${ctl[0][1]}" r="1.7"></circle><circle class="season-atl-dot" cx="${atl[0][0]}" cy="${atl[0][1]}" r="1.7"></circle>` : "";
+        return `<path class="season-ctl-area" d="M${ctl[0][0]},${baseline} ${path(ctl).replace(/^M/, "L")} L${ctl.at(-1)[0]},${baseline} Z"></path><path class="season-ctl-line" d="${path(ctl)}"></path><path class="season-atl-line" d="${path(atl)}"></path>${dots}`;
       }).join("");
-      const plannedArea = series.trajectory_runs.map((run) => {
-        const values = points(run, "target_value");
-        return `<path class="season-planned-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path>`;
-      }).join("");
-      const trajectory = series.trajectory_runs.map((run) =>
-        `<path class="season-target-line" d="${path(points(run, "target_value"))}"></path>`
-      ).join("");
-      const recorded = series.recorded_runs.map((run) => {
-        const values = points(run, "recorded_tss");
-        return `<path class="season-recorded-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path><path class="season-recorded-line" d="${path(values)}"></path>`;
-      }).join("");
-      const hasData = series.target_runs.length || series.recorded_runs.length;
       return `<svg class="season-load-chart" viewBox="0 0 ${width} 112" preserveAspectRatio="none" aria-hidden="true">
-        <title>Weekly TSS: planned budget, intentional range, and recorded load</title>
+        <title>Recorded training load: CTL (42-day) and ATL (7-day), in TSS/day</title>
         <line class="season-chart-grid" x1="0" x2="${width}" y1="${baseline}" y2="${baseline}"></line>
-        <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_tss / 2)}" y2="${y(series.max_tss / 2)}"></line>
-        ${plannedArea}${targets}${recorded}${trajectory}
-        ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}${row.target_note && row.target_min !== null ? ` · ${row.target_note}` : ""}`)}</title></rect>`).join("")}
-      </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_tss)} TSS</span><span>0 TSS</span></div>` : '<span class="season-chart-empty">No weekly TSS data</span>'}`;
+        <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_load / 2)}" y2="${y(series.max_load / 2)}"></line>
+        ${curves}
+        ${series.rows.filter((row) => row.ctl !== null).map((row) => `<rect class="season-day-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(performanceLoadTooltip(row))}</title></rect>`).join("")}
+      </svg>${series.runs.length ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_load)} TSS/day</span><span>0 TSS/day</span></div>` : `<span class="season-chart-empty">${escapeHtml(performanceLoadUnavailableLabel(series))}</span>`}`;
     }
 
     function seasonHorizonLayout(phases, currentWeek, selectedDate, today, domain = null) {
@@ -10309,10 +10430,12 @@ HTML_TEMPLATE = """<!doctype html>
       const domain = full ? { start_date: `${year}-01-01`, end_date: `${year}-12-31` } : null;
       const layout = seasonHorizonLayout(DATA.phases, currentWeek, state.selectedDate, TODAY, domain);
       if (!layout) return "";
-      const loadSeries = seasonLoadSeries(DATA.weeks, layout, TODAY);
-      const provenance = seasonLoadProvenance(loadSeries);
-      const selectedLoad = loadSeries.rows.find((row) => row.start_date === currentWeek?.start_date);
-      const loadSummary = seasonWeekLoadLabel(selectedLoad);
+      const weeklySeries = seasonLoadSeries(DATA.weeks, layout, TODAY);
+      const budgets = seasonLoadProvenance(weeklySeries);
+      const selectedWeekLoad = weeklySeries.rows.find((row) => row.start_date === currentWeek?.start_date);
+      const loadSeries = performanceLoadSeries(DATA.trainingLoad, layout, TODAY);
+      const provenance = performanceLoadProvenance(loadSeries);
+      const loadSummary = performanceLoadSelectionLabel(loadSeries, state.selectedDate);
       const eventRows = Array.isArray(DATA.events) ? DATA.events
         : (DATA.days || []).flatMap((day) => (day.events || []).map((event) => ({ ...event, date: event.date || day.date })));
       const races = seasonRaceMarkers(eventRows, layout).map((event) => {
@@ -10342,24 +10465,24 @@ HTML_TEMPLATE = """<!doctype html>
             <div>
               <p class="eyebrow">Season plan</p>
               <strong>${escapeHtml(arcLabel)}</strong>
-              ${full ? `<p class="season-overview-copy">${escapeHtml(provenance.note)} Boundary points retain their whole-week totals.</p>` : ""}
+              ${full ? `<p class="season-overview-copy">${escapeHtml(provenance.note)}</p>` : ""}
             </div>
             <div class="season-horizon-races">
               ${upcoming.map((event) => raceButton(event, "upcoming")).join("")}
             </div>
           </div>
-          ${full ? `<p class="season-overview-stats"><span><strong>${provenance.budget}</strong> coach-budget weeks${provenance.provisional ? ` · ${provenance.provisional} provisional` : ""}</span><span><strong>${provenance.source}</strong> source-target weeks</span><span><strong>${provenance.prescribed}</strong> prescribed-session weeks</span><span><strong>${provenance.recorded}</strong> recorded weeks${provenance.incomplete ? ` · ${provenance.incomplete} incomplete` : ""}</span></p>` : ""}
+          ${full ? `<p class="season-overview-stats">${provenance.latest ? `<span><strong>CTL ${performanceLoadNumber(provenance.latest.ctl)}</strong> · <strong>ATL ${performanceLoadNumber(provenance.latest.atl)}</strong> on ${escapeHtml(dayLabel(provenance.latest.date))}</span>` : ""}${loadSeries.through_date ? `<span>Model through <strong>${escapeHtml(dayLabel(loadSeries.through_date))}</strong></span>` : ""}<span><strong>${budgets.budget}</strong> coach-budget weeks${budgets.provisional ? ` · ${budgets.provisional} provisional` : ""}</span>${budgets.source || budgets.prescribed ? `<span><strong>${budgets.source + budgets.prescribed}</strong> source or prescribed-session weeks</span>` : ""}${provenance.incomplete ? `<span><strong>${provenance.incomplete}</strong> incomplete recorded-load days in view</span>` : ""}</p>` : ""}
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <div class="season-chart-key"><strong>Weekly TSS</strong><span class="trajectory-key"><i aria-hidden="true"></i>Planned budget</span><span><i aria-hidden="true"></i>Intentional range</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded load</span></div>
+              <div class="season-chart-key" title="${escapeHtml(provenance.note)}"><strong>Recorded training load</strong><span class="ctl-key"><i aria-hidden="true"></i>CTL · 42-day</span><span class="atl-key"><i aria-hidden="true"></i>ATL · 7-day</span></div>
               <div class="season-track-actions">
                 <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
                 <button type="button" class="season-today-button" data-season-today data-season-focus="today" aria-label="${escapeHtml(todayDescription)}" title="${escapeHtml(todayDescription)}"${canJumpToday ? "" : " disabled"}><i aria-hidden="true"></i>Today</button>
                 ${full ? `<button type="button" class="season-open-week" data-season-open-week data-season-focus="open"${currentWeek ? "" : " disabled"}>Open week ↗</button>` : ""}
               </div>
             </div>
-            <div class="season-track" ${horizonWeeks.length ? `data-season-track data-season-focus="track" role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${horizonWeeks.length - 1}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}"` : 'role="img" aria-label="Season TSS chart"'} aria-describedby="${summaryId}">
-              ${renderSeasonLoadChart(loadSeries)}
+            <div class="season-track" ${horizonWeeks.length ? `data-season-track data-season-focus="track" role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${horizonWeeks.length - 1}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}"` : 'role="img" aria-label="Season CTL and ATL chart"'} aria-describedby="${summaryId}">
+              ${renderPerformanceLoadChart(loadSeries)}
               ${layout.phases.map((phase) => {
                 const label = `${phase.name} · ${dayLabel(phase.start_date)}–${dayLabel(phase.end_date)}`;
                 return `<div class="season-phase ${phaseTone(phase.name)}" data-season-phase aria-hidden="true" title="${escapeHtml(label)}" style="left:${phase.left}%; width:${phase.width}%"></div>`;
@@ -10373,6 +10496,7 @@ HTML_TEMPLATE = """<!doctype html>
             </div>
             ${full && races.length ? `<div class="season-event-track" aria-label="Race and event dates" style="height:${23 + 18 * Math.max(...races.map((event) => event.row))}px">${races.map((event) => `<button type="button" class="season-event-marker${event.tentative ? " tentative" : ""}" data-season-race-marker data-season-date="${escapeHtml(event.date)}" data-season-focus="race-${escapeHtml(event.date)}" aria-label="${escapeHtml(event.description)}" title="${escapeHtml(event.description)}" style="left:${event.left}%; --event-row:${event.row}"${event.selectable ? "" : " disabled"}></button>`).join("")}</div>` : ""}
             <p class="season-load-readout" id="${summaryId}" aria-live="polite">${full && selectedPhase ? `<span data-season-phase-readout>Phase: ${escapeHtml(selectedPhase)} · </span>` : ""}${escapeHtml(loadSummary)}${horizonWeeks.length ? ` · Select a week for details${full ? "; Enter opens Week" : ""}` : ""}</p>
+            ${full && selectedWeekLoad ? `<p class="season-week-budget-readout" title="${escapeHtml(selectedWeekLoad.target_min !== null ? selectedWeekLoad.target_note : "")}">Shown week · ${escapeHtml(seasonWeekLoadLabel(selectedWeekLoad))}</p>` : ""}
             ${full && races.length ? `<details class="season-event-list"><summary>${races.reduce((count, event) => count + event.names.length, 0)} races and events in ${escapeHtml(year)}</summary><div>${races.map((event) => raceButton(event, "event")).join("")}</div></details>` : ""}
           </div>
         </section>`;
@@ -11562,6 +11686,9 @@ def _status_label(status: Any) -> str:
         "above_budget": "Above budget",
         "below_budget": "Below budget",
         "within_budget": "Within budget",
+        "recorded_history": "Recorded",
+        "recorded_unscored": "No scored load",
+        "no_recordings": "No recordings",
     }.get(str(status or ""), str(status or "Tracking").title())
 
 
@@ -12083,17 +12210,6 @@ def _week_display_status(
     target = _safe_float(load.get("estimated_tss"))
     minimum = _safe_float(load.get("estimated_tss_min"))
     maximum = _safe_float(load.get("estimated_tss_max"))
-    if (
-        target is None
-        or minimum is None
-        or maximum is None
-        or not 0 <= minimum <= target <= maximum
-    ):
-        return (
-            "budget_review"
-            if load.get("coach_budget_state") in {"needs_review", "orphaned"}
-            else "budget_missing"
-        )
     try:
         start_text, end_text = str(row.get("start_date") or ""), str(row.get("end_date") or "")
         start, end = date.fromisoformat(start_text), date.fromisoformat(end_text)
@@ -12106,10 +12222,29 @@ def _week_display_status(
         period = "future" if current < start else "completed" if current > end else "current"
     if period not in {"future", "current", "completed"}:
         return "budget_missing"
-    if period == "future":
-        return "budget_set"
     actual_load = _totals_load_display(row.get("totals") or {})
     actual_tss = _safe_float((row.get("totals") or {}).get("estimated_tss"))
+    if (
+        target is None
+        or minimum is None
+        or maximum is None
+        or not 0 <= minimum <= target <= maximum
+    ):
+        if load.get("coach_budget_state") in {"needs_review", "orphaned"}:
+            return "budget_review"
+        if period != "completed":
+            return "budget_missing"
+        if actual_load["tss_partial"] or actual_load["tss_missing_activity_count"]:
+            return "load_incomplete"
+        if actual_tss is not None and actual_tss >= 0:
+            return "recorded_history"
+        return (
+            "recorded_unscored"
+            if (_safe_int((row.get("totals") or {}).get("activity_count")) or 0) > 0
+            else "no_recordings"
+        )
+    if period == "future":
+        return "budget_set"
     if actual_tss is None or actual_tss < 0:
         return "load_incomplete" if actual_load["tss_missing_activity_count"] else "not_measured"
 
@@ -13428,6 +13563,15 @@ def _goals_summary(data_dir: Path) -> dict[str, str | None]:
     return {"north_star": north_star, "primary_goal": primary_goal}
 
 
+def _athlete_today(athlete: dict[str, Any], *, now: datetime | None = None) -> date:
+    instant = now if now is not None else datetime.now(timezone.utc)
+    try:
+        athlete_zone = ZoneInfo(str(athlete.get("timezone") or "UTC"))
+    except (ValueError, ZoneInfoNotFoundError):
+        athlete_zone = timezone.utc
+    return instant.astimezone(athlete_zone).date()
+
+
 def _build_payload(
     data_dir: Path,
 ) -> tuple[
@@ -13444,6 +13588,15 @@ def _build_payload(
     phases = _read(data_dir / "plan" / "phases.json", [])
     athlete = _read(data_dir / "plan" / "athlete.json", {})
     athlete = athlete if isinstance(athlete, dict) else {}
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0)
+    model_date = _athlete_today(athlete, now=generated_at)
+    try:
+        training_load = build_training_load(daily_rows, as_of=model_date)
+    except ValueError:
+        # Do not silently skip malformed history and understate the recurrence.
+        # A broken analytic should not hide the rest of the local dashboard.
+        training_load = build_training_load([], as_of=model_date)
+        training_load["unavailable_reason"] = "invalid_daily_history"
     coach_budgets = load_tss_budgets(data_dir)
     structured_by_date = _structured_dashboard_workouts(data_dir, athlete)
     weekly_rows = list(weekly_rows) if isinstance(weekly_rows, list) else []
@@ -13612,7 +13765,9 @@ def _build_payload(
             tss_target=plan.get("tss_target"),
             coach_budget=coach_budget,
         )
-        display_status = _week_display_status(row, week_days, planned_load=planned_week_load)
+        display_status = _week_display_status(
+            row, week_days, today=model_date, planned_load=planned_week_load
+        )
         week_load = _totals_load_display(totals)
         week_record = {
             "start_date": row["start_date"],
@@ -13677,8 +13832,9 @@ def _build_payload(
         weeks.append(week_record)
 
     payload = {
-        "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "generatedAt": generated_at.isoformat(),
         "athlete": athlete if isinstance(athlete, dict) else {},
+        "trainingLoad": training_load,
         "postSyncSummary": post_sync_summary,
         "phases": phases if isinstance(phases, list) else [],
         "events": events if isinstance(events, list) else [],

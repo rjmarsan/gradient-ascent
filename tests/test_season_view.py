@@ -79,6 +79,56 @@ class SeasonViewTest(unittest.TestCase):
         }
         data = {
             "weeks": [week],
+            "trainingLoad": {
+                "method": "ctl_atl_daily_ewma_v1",
+                "time_constants": {"ctl": 42, "atl": 7},
+                "initialization": "zero_before_first_scored_day",
+                "history_start": "2026-08-14",
+                "through_date": "2026-08-17",
+                "summary": {
+                    "available": True,
+                    "scored_days": 3,
+                    "incomplete_days": 1,
+                    "missing_score_days": 0,
+                    "no_recording_days": 1,
+                    "prior_unscored_days": 0,
+                    "history_incomplete": True,
+                },
+                "rows": [
+                    {
+                        "date": "2026-08-14",
+                        "ctl": 0,
+                        "atl": 0,
+                        "tsb": 0,
+                        "load_applied": 0,
+                        "tss_observed": 0,
+                        "day_status": "complete",
+                        "history_days": 1,
+                        "seed_weight_ctl": 41 / 42,
+                        "seed_weight_atl": 6 / 7,
+                        "history_incomplete": False,
+                        "recent_incomplete_days_42": 0,
+                        "recent_incomplete_days_7": 0,
+                        "to_date": False,
+                    },
+                    {
+                        "date": "2026-08-15",
+                        "ctl": 2,
+                        "atl": 12,
+                        "tsb": 0,
+                        "load_applied": 84,
+                        "tss_observed": 84,
+                        "day_status": "partial",
+                        "history_days": 2,
+                        "seed_weight_ctl": (41 / 42) ** 2,
+                        "seed_weight_atl": (6 / 7) ** 2,
+                        "history_incomplete": True,
+                        "recent_incomplete_days_42": 1,
+                        "recent_incomplete_days_7": 1,
+                        "to_date": False,
+                    },
+                ],
+            },
             "phases": [{"name": "Build", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
             "days": [{"date": "2026-08-17", "events": []}],
             "events": [
@@ -110,7 +160,29 @@ class SeasonViewTest(unittest.TestCase):
         self.assertIn("Synthetic coaching rationale", full)
         self.assertIn("coach-budget weeks", full)
         self.assertNotIn("IF 0.55–0.85", full)
-        self.assertIn("not measured fitness", full)
+        for rendered in (full, mini):
+            for expected in (
+                "CTL",
+                "ATL",
+                "42-day",
+                "7-day",
+                "TSS/day",
+                'class="season-ctl-area"',
+                'class="season-ctl-line"',
+                'class="season-atl-line"',
+            ):
+                self.assertIn(expected, rendered)
+            for obsolete in (
+                "<strong>Weekly TSS</strong>",
+                'class="season-target-band"',
+                'class="season-target-line"',
+                'class="season-planned-area"',
+                'class="season-recorded-area"',
+                'class="season-recorded-line"',
+            ):
+                self.assertNotIn(obsolete, rendered)
+            self.assertNotIn("NaN", rendered)
+            self.assertNotIn("Infinity", rendered)
         self.assertIn("data-season-race-marker", full)
         self.assertIn("A &amp; B criterium", full)
         self.assertIn("tentative", full)

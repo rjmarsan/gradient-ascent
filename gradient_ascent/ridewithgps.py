@@ -22,7 +22,12 @@ from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .recordings import LOCAL_RECORDING_SOURCE, prepare_activity_recording
+from .recordings import (
+    LOCAL_RECORDING_SOURCE,
+    apply_recording_source_durations,
+    prepare_activity_recording,
+    recording_source_duration_fields,
+)
 
 
 DEFAULT_SYNC_DAYS = 14
@@ -460,7 +465,26 @@ def _metadata(value: Any, trip_id: str) -> dict[str, Any] | None:
         or any(not isinstance(item, str) or _SHA.fullmatch(item) is None for item in superseded)
     ):
         raise ValueError("Ride with GPS superseded metadata is invalid.")
+    recording_source_duration_fields(
+        value.get("source_moving_time"), value.get("source_elapsed_time")
+    )
     return value
+
+
+def _source_durations(
+    trip: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    # Both fields are documented integer seconds. Keep the original TCX and
+    # its elapsed timestamps unchanged; never infer a pause from missing points.
+    fields = recording_source_duration_fields(
+        (previous or {}).get("source_moving_time"),
+        (previous or {}).get("source_elapsed_time"),
+    )
+    fields.update(recording_source_duration_fields(trip.get("moving_time"), trip.get("duration")))
+    return recording_source_duration_fields(
+        fields.get("source_moving_time"), fields.get("source_elapsed_time")
+    )
 
 
 def _provider_name(value: Any) -> str | None:
@@ -540,6 +564,8 @@ def _decorate(
     for key in _SOURCE_TAXONOMY_FIELDS:
         activity.pop(key, None)
     activity.update(_sport_metadata(trip))
+    activity.update(_source_durations(trip, {**(previous or {}), **(previous_activity or {})}))
+    activity.update(apply_recording_source_durations(activity))
 
 
 def _summary(full_history: bool) -> dict[str, Any]:
@@ -700,6 +726,7 @@ def sync_ridewithgps(
                                 if key not in _SOURCE_TAXONOMY_FIELDS
                             },
                             **_source_taxonomy(trip),
+                            **_source_durations(trip, activities[activity_id]),
                         }
                         if provider_name is not None:
                             refreshed_metadata["last_provider_name"] = provider_name
@@ -799,6 +826,7 @@ def sync_ridewithgps(
                     "departed_at": trip["departed_at"],
                     "time_zone": trip["time_zone"],
                     **_source_taxonomy(trip),
+                    **_source_durations(trip, previous if borrowed else activity),
                     "last_provider_name": _provider_name(trip.get("name"))
                     or (previous.get("last_provider_name") if previous else None),
                     "superseded": superseded,

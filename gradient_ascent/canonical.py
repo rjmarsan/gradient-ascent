@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .device_corrections import apply_temperature_correction, load_temperature_corrections
+from .recordings import apply_recording_source_durations
 from .storage import read_json, write_json
 
 
@@ -137,7 +138,15 @@ def _strava_activities(data_dir: Path) -> list[dict[str, Any]]:
 
 def _recording_activities(data_dir: Path) -> list[dict[str, Any]]:
     payload = read_json(data_dir / "recordings" / "activities.json", default={}) or {}
-    activities = payload.values() if isinstance(payload, dict) else []
+    activities = (
+        [
+            apply_recording_source_durations(item)
+            for item in payload.values()
+            if isinstance(item, dict)
+        ]
+        if isinstance(payload, dict)
+        else []
+    )
     return [
         _activity(
             provider="recording",

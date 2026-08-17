@@ -102,6 +102,120 @@ class RideWithGPSTest(unittest.TestCase):
     def index(self):
         return json.loads((self.workspace / "recordings" / "activities.json").read_text())
 
+    def test_provider_moving_time_overrides_paused_tcx_without_changing_identity(self):
+        from gradient_ascent.ridewithgps import trip_to_tcx
+
+        record = {**trip(), "moving_time": 60, "duration": 120}
+        digest = hashlib.sha256(trip_to_tcx(record)).hexdigest()
+        result = self.sync(mock.Mock(side_effect=[listing([record]), {"trip": record}]))
+        imported = self.index()[f"recording-{digest}"]
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(imported["moving_time"], 60)
+        self.assertEqual(imported["elapsed_time"], 120)
+        self.assertEqual(imported["source_moving_time"], 60)
+        self.assertEqual(imported["source_elapsed_time"], 120)
+        self.assertAlmostEqual(imported["kilojoules"], imported["average_watts"] * 60 / 1000)
+        metadata = json.loads(
+            (self.workspace / "integrations/ridewithgps/files/101.json").read_text()
+        )
+        self.assertEqual(
+            (metadata["source_moving_time"], metadata["source_elapsed_time"]), (60, 120)
+        )
+
+    def test_unchanged_list_backfills_source_time_and_exact_file_reimport_preserves_it(self):
+        from gradient_ascent.recordings import import_activity_recording
+
+        record = trip()
+        self.sync(mock.Mock(side_effect=[listing([record]), {"trip": record}]))
+        identifier, before = next(iter(self.index().items()))
+        index_path = self.workspace / "recordings/activities.json"
+        before["name"] = "Authored title"
+        index_path.write_text(json.dumps({identifier: before}))
+        sidecars = [
+            self.workspace / "recordings" / kind / f"{identifier}.json"
+            for kind in ("streams", "laps")
+        ]
+        original = [path.read_bytes() for path in sidecars]
+        source = {**record, "moving_time": 60}
+        client = mock.Mock(side_effect=[listing([source])])
+        result = self.sync(client)
+        self.assertEqual(client.call_count, 1)
+        self.assertEqual(result["existing"], 1)
+        updated = self.index()[identifier]
+        self.assertEqual((updated["moving_time"], updated["elapsed_time"]), (60, 120))
+        self.assertEqual(updated["name"], "Authored title")
+        self.assertEqual(updated["start_date_local"], before["start_date_local"])
+        self.assertEqual([path.read_bytes() for path in sidecars], original)
+        raw = (
+            self.workspace
+            / "integrations/ridewithgps/files"
+            / f"101-{identifier.removeprefix('recording-')}.tcx"
+        )
+        repeated = import_activity_recording(self.workspace, raw)["activity"]
+        self.assertEqual((repeated["moving_time"], repeated["elapsed_time"]), (60, 120))
+        self.assertEqual(repeated["source_moving_time"], 60)
+        self.assertEqual(repeated["name"], "Authored title")
+        self.assertEqual(set(self.index()), {identifier})
+
+    def test_invalid_provider_duration_pair_does_not_replace_owned_index(self):
+        record = {**trip(), "moving_time": 60}
+        self.sync(mock.Mock(side_effect=[listing([record]), {"trip": record}]))
+        index_path = self.workspace / "recordings/activities.json"
+        original = index_path.read_bytes()
+        for value in (-1, True, float("inf"), 121):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.sync(mock.Mock(side_effect=[listing([{**record, "moving_time": value}])]))
+            self.assertEqual(index_path.read_bytes(), original)
+
+    def test_optional_duration_updates_preserve_metadata_and_reject_conflicts(self):
+        record = {**trip(), "moving_time": 60}
+        self.sync(mock.Mock(side_effect=[listing([record]), {"trip": record}]))
+        metadata_path = self.workspace / "integrations/ridewithgps/files/101.json"
+        edited = trip(updated="2", watts=250)
+        self.sync(mock.Mock(side_effect=[listing([edited]), {"trip": edited}]))
+        metadata = json.loads(metadata_path.read_text())
+        self.assertEqual(
+            (metadata["source_moving_time"], metadata["source_elapsed_time"]), (60, 120)
+        )
+        current = next(iter(self.index().values()))
+        self.assertEqual((current["moving_time"], current["elapsed_time"]), (60, 120))
+        original_index = (self.workspace / "recordings/activities.json").read_bytes()
+        original_metadata = metadata_path.read_bytes()
+        contradictory = {**edited, "duration": 30}
+        with self.assertRaises(ValueError):
+            self.sync(mock.Mock(side_effect=[listing([contradictory])]))
+        self.assertEqual(
+            (self.workspace / "recordings/activities.json").read_bytes(), original_index
+        )
+        self.assertEqual(metadata_path.read_bytes(), original_metadata)
+
+    def test_source_duration_repair_preserves_distinct_strava_primaries(self):
+        from gradient_ascent.canonical import canonical_activity_records, resolve_activity_records
+
+        record = {**trip(), "duration": 3600}
+        record["track_points"][-1]["t"] += 3480
+        strava = {
+            str(identifier): {
+                "id": identifier,
+                "sport_type": "Ride",
+                "start_date": f"2026-08-15T16:{minute}:00Z",
+                "start_date_local": f"2026-08-15T09:{minute}:00Z",
+                "moving_time": 60,
+                "distance": 1000,
+            }
+            for identifier, minute in ((9, "00"), (10, "05"))
+        }
+        (self.workspace / "strava/activities.json").write_text(json.dumps(strava))
+        baseline, _ = resolve_activity_records(canonical_activity_records(self.workspace))
+        baseline_ids = {row["id"] for row in baseline}
+        self.assertEqual(len(baseline_ids), 2)
+        self.sync(mock.Mock(side_effect=[listing([record]), {"trip": record}]))
+        original_ids = set(self.index())
+        self.sync(mock.Mock(side_effect=[listing([{**record, "moving_time": 60}])]))
+        resolved, _ = resolve_activity_records(canonical_activity_records(self.workspace))
+        self.assertEqual({row["id"] for row in resolved}, baseline_ids)
+        self.assertEqual(set(self.index()), original_ids)
+
     def test_paginated_recent_sync_preserves_full_ride_and_does_not_refresh(self):
         first, second = trip(101), trip(102, departure="2026-08-16T09:00:00-07:00")
         client = mock.Mock(

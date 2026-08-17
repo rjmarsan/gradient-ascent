@@ -9,6 +9,79 @@ TCX = b"""<?xml version="1.0"?><TrainingCenterDatabase><Activities><Activity Spo
 
 
 class RecordingPreparationTest(unittest.TestCase):
+    def test_source_duration_validation_preserves_zero_and_rejects_invalid_values(self):
+        from gradient_ascent.recordings import recording_source_duration_fields
+
+        self.assertEqual(recording_source_duration_fields(), {})
+        self.assertEqual(
+            recording_source_duration_fields(0, 0),
+            {
+                "source_moving_time": 0,
+                "source_elapsed_time": 0,
+            },
+        )
+        for moving, elapsed in (
+            (True, 60),
+            (-1, 60),
+            (1.5, 60),
+            (61, 60),
+            (10**400, None),
+            (0, float("nan")),
+        ):
+            with self.subTest(moving=moving, elapsed=elapsed), self.assertRaises(ValueError):
+                recording_source_duration_fields(moving, elapsed)
+
+    def test_local_canonical_read_applies_only_proven_source_duration_and_derived_energy(self):
+        from gradient_ascent.canonical import canonical_activity_records
+        from gradient_ascent.recordings import import_activity_recording
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "ride.tcx"
+            source.write_bytes(TCX)
+            workspace = root / "workspace"
+            imported = import_activity_recording(workspace, source)["activity"]
+            imported.update(
+                source_provider="ridewithgps",
+                source_activity_id="101",
+                source_moving_time=30,
+                source_elapsed_time=90,
+                average_watts=200,
+                kilojoules=12,
+            )
+            index_path = workspace / "recordings/activities.json"
+            index_path.write_text(json.dumps({imported["id"]: imported}))
+            before = index_path.read_bytes()
+            record = next(
+                row
+                for row in canonical_activity_records(workspace)
+                if row["source"]["provider"] == "recording"
+            )
+            self.assertEqual((record["moving_time_s"], record["elapsed_time_s"]), (30, 90))
+            self.assertEqual(record["kilojoules"], 6)
+            self.assertEqual(index_path.read_bytes(), before)
+            imported["kilojoules"] = 77
+            index_path.write_text(json.dumps({imported["id"]: imported}))
+            record = next(
+                row
+                for row in canonical_activity_records(workspace)
+                if row["source"]["provider"] == "recording"
+            )
+            self.assertEqual(record["kilojoules"], 77)
+            imported["kilojoules_source"] = "source"
+            index_path.write_text(json.dumps({imported["id"]: imported}))
+            repeated = import_activity_recording(workspace, source)["activity"]
+            self.assertEqual(repeated["kilojoules"], 77)
+            self.assertEqual(repeated["kilojoules_source"], "source")
+            imported["source_moving_time"] = True
+            index_path.write_text(json.dumps({imported["id"]: imported}))
+            record = next(
+                row
+                for row in canonical_activity_records(workspace)
+                if row["source"]["provider"] == "recording"
+            )
+            self.assertEqual(record["moving_time_s"], 60)
+
     def test_exact_reimport_preserves_only_valid_rwgps_cycling_classification(self):
         from gradient_ascent.recordings import import_activity_recording
 

@@ -19,7 +19,7 @@ class DashboardLoadDisplayTest(unittest.TestCase):
         self.assertEqual(source["hours"], 1.5)
         self.assertEqual(source["estimated_tss"], 75.4)
         self.assertEqual(source["tss_source"], "source_target")
-        self.assertEqual(source["tss_value_label"], "75.4 TSS")
+        self.assertEqual(source["tss_value_label"], "75 TSS")
         self.assertEqual(source["qualifier"], "Source target")
         forecast = training_center._planned_load_for_day("Z2 90–150min", [])
         self.assertEqual((forecast["hours_min"], forecast["hours_max"]), (1.5, 2.5))
@@ -46,6 +46,36 @@ class DashboardLoadDisplayTest(unittest.TestCase):
         )
         self.assertIsNone(load["hours"])
         self.assertIsNone(load["estimated_tss"])
+
+    def test_interval_recovery_is_not_the_whole_planned_session(self):
+        for text in (
+            "2x15-18min threshold at 240-260W; 6min easy; reduce to 2x12min if tired",
+            "3x12min threshold; 5min easy between",
+            "3x12min threshold; 5min easy with high cadence between efforts",
+            "3x12min threshold; 5min easy ride between intervals",
+            "10min warmup; 3x10min threshold; 5min recovery; 10min cooldown",
+            "3x10min threshold with 5min recovery",
+        ):
+            with self.subTest(text=text):
+                load = training_center._planned_load_for_day(text, [])
+                self.assertIsNone(load["hours"])
+                self.assertIsNone(load["estimated_tss"])
+        for text, hours in (
+            ("90min total including 3x10min threshold; 5min easy between", 1.5),
+            ("90min controlled threshold ride; 3x10min at threshold; 5min recovery", 1.5),
+            ("90min ride including 3x10min threshold with 5min recovery", 1.5),
+            ("2h Z2 with 4x8s sprints", 2),
+        ):
+            with self.subTest(text=text):
+                load = training_center._planned_load_for_day(text, [])
+                self.assertEqual(load["hours"], hours)
+                self.assertIsNotNone(load["estimated_tss"])
+        explicit = training_center._planned_load_for_day(
+            "3x10min threshold; 5min easy between",
+            [],
+            source_load={"hours_min": 1.5, "hours_max": 1.5, "tss_min": 90, "tss_max": 90},
+        )
+        self.assertEqual((explicit["hours"], explicit["estimated_tss"]), (1.5, 90))
 
     def test_cancellation_invalidates_an_ambiguous_imported_day_total(self):
         source = {"hours_min": 1.5, "hours_max": 1.5, "tss_min": 100, "tss_max": 100}
@@ -159,14 +189,42 @@ class DashboardLoadDisplayTest(unittest.TestCase):
             }
         )
         display = training_center._totals_load_display(totals.finalize())
-        self.assertEqual(display["tss_label"], "75.4 TSS")
-        self.assertEqual(display["tss_short_label"], "75.4")
+        self.assertEqual(display["tss_label"], "75 TSS")
+        self.assertEqual(display["tss_short_label"], "75")
+        self.assertEqual(totals.finalize()["estimated_tss"], 75.4)
         self.assertTrue(display["tss_estimated"])
         self.assertTrue(display["tss_partial"])
         self.assertIn("Calculated", display["tss_qualifier"])
         self.assertIn("98.8% power coverage", display["tss_qualifier"])
         self.assertNotIn("partial total", display["tss_qualifier"])
         self.assertIn("configured FTP", display["tss_description"])
+
+    def test_whole_tss_labels_leave_values_and_coverage_precise(self):
+        for value, label in ((0, "0"), (74.5, "75"), (75.4, "75"), (75.5, "76")):
+            with self.subTest(value=value):
+                activity = {
+                    "estimated_tss": value,
+                    "estimated_tss_source": "estimated_power_stream",
+                    "power_load_estimate": {"scope": "recorded_power", "coverage_ratio": 0.999},
+                }
+                display = training_center._activity_load_display(activity)
+                self.assertEqual(display["tss_label"], f"{label} TSS")
+                self.assertEqual(display["tss_short_label"], label)
+                self.assertEqual(activity["estimated_tss"], value)
+                self.assertIn("99.9% power coverage", display["tss_qualifier"])
+                self.assertIn("Recorded power duration", display["tss_description"])
+                self.assertEqual(training_center._tss_label(value), f"{label} TSS")
+        source_range = training_center._planned_load_display(
+            {
+                "estimated_tss": 75,
+                "estimated_tss_min": 74.6,
+                "estimated_tss_max": 75.4,
+                "tss_source": "source_target",
+            }
+        )
+        self.assertEqual(source_range["tss_value_label"], "75 TSS")
+        self.assertEqual(source_range["estimated_tss_min"], 74.6)
+        self.assertEqual(source_range["estimated_tss_max"], 75.4)
 
     def test_unscored_walk_does_not_invalidate_a_cycling_total(self):
         totals = AggregateTotals()

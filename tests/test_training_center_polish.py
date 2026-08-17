@@ -296,7 +296,7 @@ class TrainingCenterPolishTest(unittest.TestCase):
             "power_load_estimate": {"scope": "recorded_power", "coverage_ratio": 0.793},
         }
         detail = training_center._activity_detail(activity, {}, Path("/tmp"), include_heavy=False)
-        self.assertEqual(detail["tss_label"], "42.1 TSS")
+        self.assertEqual(detail["tss_label"], "42 TSS")
         self.assertTrue(detail["tss_partial"])
         self.assertIn("79.3%", detail["tss_description"])
         self.assertEqual(detail["tss_qualifier"], "Calculated · 79.3% power coverage")

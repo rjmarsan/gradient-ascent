@@ -22,7 +22,13 @@ from the score originally shown by your device or TrainingPeaks. See TrainingPea
 [NP explanation](https://help.trainingpeaks.com/hc/en-us/articles/204071804-Normalized-Power)
 and [TSS definition](https://www.trainingpeaks.com/learn/articles/estimating-training-stress-score-tss/).
 
-The Training Center shows scores to at most one decimal place and identifies their origin
+Ride with GPS imports use the provider's separate moving and total durations;
+stopped time is not counted as moving just because the next track point is in
+motion. Original timestamps and recording files stay intact. Older imports gain
+these source durations on their next authorized sync, and subsequent local-only
+refreshes reuse them. See [Ride with GPS's duration definitions](https://support.ridewithgps.com/hc/en-us/articles/4419571047835-Activity-Metrics).
+
+The Training Center rounds displayed TSS to whole numbers and identifies its origin
 as **Source** or **Calculated**, instead of putting a `~` before the number. Coverage
 and missing load are separate: a note such as **97% power coverage** or **1 ride
 without load** explains what is incomplete. Totals include only supported values,
@@ -30,7 +36,8 @@ without extrapolating the missing load. Missing-load counts cover cycling activi
 with positive moving or elapsed time, not unscored walks or zero-duration entries.
 Any valid source-reported score still contributes to the total. Power coverage is
 weighted by reported moving duration across locally power-scored rides; a
-source-reported score alone does not establish complete telemetry. If the source
+source-reported score alone does not establish complete telemetry. This duration
+ratio is not a point-by-point timer-coverage check. If the source
 has no score and there is not enough usable power, duration, or a valid FTP, the
 score stays missing rather than becoming zero. These estimates are coaching
 context, not a substitute for how you feel or evidence that a prescribed workout
@@ -38,10 +45,13 @@ was completed.
 
 ## Planned load
 
-The season area chart shows recorded moving hours against explicit weekly hours
-targets. It is not a fitness model. Weeks without recordings remain gaps, future
-recordings are not projected, and the current week is labeled as in progress.
-Scheduled and recorded totals remain visible together in the week and day views.
+The season area chart shows recorded weekly TSS against planned TSS ranges or
+forecasts. The selected-week readout and tooltips identify source targets,
+forecasts, calculated scores, and incomplete load. It is not a fitness model.
+Weeks without supported scores remain gaps, genuine zero scores remain zero,
+future recordings are not projected, and the current week is labeled as in
+progress. The underlying values retain their precision. Scheduled and recorded
+hours and TSS remain visible together in the week and day views.
 
 Daily calendar imports preserve `Planned TSS` and explicit duration columns,
 including numeric `Duration (min)` values. Weekly sheets can supply `TSS Target`.
@@ -70,6 +80,9 @@ The current whole-session IF assumptions are:
 
 These are application assumptions, not athlete-specific measurements. An explicit
 rest day can be zero; a session without enough information stays unknown.
+For an interval prescription, recovery, warmup, and cooldown durations are not
+treated as the whole workout. A stated total duration or imported duration is
+needed before forecasting its full-session load.
 
 For a week, an explicit TSS target wins, followed by a complete sum of daily
 targets and forecasts. If daily load is incomplete but the source gives a weekly

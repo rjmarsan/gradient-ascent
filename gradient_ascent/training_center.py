@@ -31,7 +31,7 @@ from .workspace_lock import cross_process_locking_available, workspace_lock
 
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-ACTIVITY_DETAILS_CACHE_VERSION = 4
+ACTIVITY_DETAILS_CACHE_VERSION = 5
 MAX_ACTIVITY_DETAIL_SIDECAR_BYTES = 64 * 1024 * 1024
 _training_center_build_lock = workspace_lock
 WEEKDAY_NAMES = {
@@ -7997,6 +7997,12 @@ HTML_TEMPLATE = """<!doctype html>
     function formatTssNumber(value) {
       const number = Number(value);
       return value == null || !Number.isFinite(number) || number < 0 ? "--"
+        : number.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    }
+
+    function formatCoverageNumber(value) {
+      const number = Number(value);
+      return value == null || !Number.isFinite(number) || number < 0 || number > 100 ? "--"
         : number.toLocaleString(undefined, { maximumFractionDigits: 1 });
     }
 
@@ -9060,7 +9066,7 @@ HTML_TEMPLATE = """<!doctype html>
         : "-- TSS";
       const coverage = stats.tssPowerReportedSeconds > 0 ? stats.tssPowerLoadSeconds / stats.tssPowerReportedSeconds : null;
       const qualifier = [stats.tssDays ? (stats.tssEstimated ? "Calculated" : "Source") : "",
-        stats.tssPowerPartial && coverage !== null ? `${formatTssNumber(Math.min(99.9, 100 * coverage))}% power coverage` : "",
+        stats.tssPowerPartial && coverage !== null ? `${formatCoverageNumber(Math.min(99.9, 100 * coverage))}% power coverage` : "",
         stats.tssMissingRides ? `${stats.tssMissingRides} ride${stats.tssMissingRides === 1 ? "" : "s"} without load` : ""
       ].filter(Boolean).join(" · ");
       return `
@@ -9931,18 +9937,21 @@ HTML_TEMPLATE = """<!doctype html>
       const spanEnd = dateTime(layout?.end_date) + dayMs;
       const todayTime = dateTime(today);
       if (!Number.isFinite(spanStart) || !Number.isFinite(spanEnd) || spanEnd <= spanStart) {
-        return { rows: [], target_runs: [], recorded_runs: [], max_hours: 1 };
+        return { rows: [], target_runs: [], recorded_runs: [], max_tss: 100 };
       }
       const percent = (time) => 100 * (time - spanStart) / (spanEnd - spanStart);
       const rows = (Array.isArray(weeks) ? weeks : []).map((week) => {
         const start = dateTime(week?.start_date);
         const end = dateTime(week?.end_date) + dayMs;
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end <= spanStart || start >= spanEnd) return null;
-        let targetMin = numeric(week.target_hours?.min);
-        let targetMax = numeric(week.target_hours?.max);
+        const plan = week.planned_load || {};
+        let targetMin = numeric(plan.estimated_tss_min);
+        let targetMax = numeric(plan.estimated_tss_max);
+        if (plan.estimated_tss_min == null && plan.estimated_tss_max == null) {
+          targetMin = targetMax = numeric(plan.estimated_tss);
+        }
         if (targetMin === null || targetMax === null || targetMax < targetMin) targetMin = targetMax = null;
-        const actual = numeric(week.actual_hours);
-        const hasRecordings = (numeric(week.totals?.activity_count) || 0) > 0 || (actual !== null && actual > 0);
+        const actual = numeric(week.totals?.estimated_tss);
         const future = !Number.isFinite(todayTime) || start > todayTime;
         const clippedStart = Math.max(start, spanStart);
         const clippedEnd = Math.min(end, spanEnd);
@@ -9952,7 +9961,9 @@ HTML_TEMPLATE = """<!doctype html>
           left: percent(clippedStart), right: percent(clippedEnd),
           center: percent((clippedStart + clippedEnd) / 2),
           target_min: targetMin, target_max: targetMax,
-          recorded_hours: !future && hasRecordings ? actual : null,
+          target_qualifier: String(plan.qualifier || (plan.estimated ? "Forecast" : "")),
+          recorded_tss: future ? null : actual,
+          recorded_qualifier: String(week.tss_qualifier || ""),
           to_date: Number.isFinite(todayTime) && start <= todayTime && todayTime < end,
           future
         };
@@ -9975,25 +9986,30 @@ HTML_TEMPLATE = """<!doctype html>
         if (current.length) result.push(current);
         return result;
       };
-      const maximum = rows.reduce((value, row) => Math.max(value, row.target_max || 0, row.recorded_hours || 0), 0);
-      const tick = maximum <= 10 ? 2 : maximum <= 30 ? 5 : 10;
+      const maximum = rows.reduce((value, row) => Math.max(value, row.target_max || 0, row.recorded_tss || 0), 0);
+      const tick = maximum <= 200 ? 50 : maximum <= 1000 ? 100 : maximum <= 2500 ? 250 : 500;
+      const ceiling = Math.ceil(maximum / tick) * tick;
       return {
-        rows, target_runs: runs("target_min"), recorded_runs: runs("recorded_hours"),
-        max_hours: Math.max(tick, Math.ceil(maximum / tick) * tick)
+        rows, target_runs: runs("target_min"), recorded_runs: runs("recorded_tss"),
+        max_tss: Math.max(100, Number.isFinite(ceiling) ? ceiling : maximum)
       };
     }
 
-    function seasonHours(value) {
-      return Number(value.toFixed(1)).toString();
+    function seasonTss(value) {
+      return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
     }
 
     function seasonWeekLoadLabel(row) {
-      if (!row) return "No weekly hours data";
-      const target = row.target_min === null ? "Scheduled hours unavailable"
-        : row.target_min === row.target_max ? `Scheduled ${seasonHours(row.target_min)} h`
-          : `Scheduled ${seasonHours(row.target_min)}–${seasonHours(row.target_max)} h`;
-      const actual = row.recorded_hours === null ? row.future ? "Not recorded yet" : "No recordings"
-        : `Recorded ${seasonHours(row.recorded_hours)} h${row.to_date ? " so far" : ""}`;
+      if (!row) return "No weekly TSS data";
+      const qualify = (label, qualifier) => qualifier ? `${label} (${qualifier})` : label;
+      const targetLow = row.target_min === null ? null : seasonTss(row.target_min);
+      const targetHigh = row.target_max === null ? null : seasonTss(row.target_max);
+      const target = row.target_min === null ? "Planned TSS unavailable"
+        : qualify(targetLow === targetHigh ? `Planned ${targetLow} TSS`
+          : `Planned ${targetLow}–${targetHigh} TSS`, row.target_qualifier);
+      const actual = row.recorded_tss === null
+        ? row.future ? "Not recorded yet" : qualify("No supported recorded TSS", row.recorded_qualifier)
+        : qualify(`Recorded ${seasonTss(row.recorded_tss)} TSS${row.to_date ? " so far" : ""}`, row.recorded_qualifier);
       return `${target} · ${actual}`;
     }
 
@@ -10002,7 +10018,7 @@ HTML_TEMPLATE = """<!doctype html>
       const baseline = 108;
       const top = 5;
       const x = (percent) => Number((percent * width / 100).toFixed(2));
-      const y = (hours) => Number((baseline - hours / series.max_hours * (baseline - top)).toFixed(2));
+      const y = (tss) => Number((baseline - tss / series.max_tss * (baseline - top)).toFixed(2));
       const points = (run, key) => [
         [x(run[0].left), y(run[0][key])],
         ...run.map((row) => [x(row.center), y(row[key])]),
@@ -10015,17 +10031,17 @@ HTML_TEMPLATE = """<!doctype html>
         return `<path class="season-target-band" d="${path(high)} ${path(low.slice().reverse()).replace(/^M/, "L")} Z"></path><path class="season-target-line" d="${path(high)}"></path>`;
       }).join("");
       const recorded = series.recorded_runs.map((run) => {
-        const values = points(run, "recorded_hours");
+        const values = points(run, "recorded_tss");
         return `<path class="season-recorded-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path><path class="season-recorded-line" d="${path(values)}"></path>`;
       }).join("");
       const hasData = series.target_runs.length || series.recorded_runs.length;
       return `<svg class="season-load-chart" viewBox="0 0 ${width} 112" preserveAspectRatio="none" aria-hidden="true">
-        <title>Weekly moving hours: scheduled range and recorded activity</title>
+        <title>Weekly TSS: planned range or forecast and recorded load</title>
         <line class="season-chart-grid" x1="0" x2="${width}" y1="${baseline}" y2="${baseline}"></line>
-        <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_hours / 2)}" y2="${y(series.max_hours / 2)}"></line>
+        <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_tss / 2)}" y2="${y(series.max_tss / 2)}"></line>
         ${targets}${recorded}
         ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}`)}</title></rect>`).join("")}
-      </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonHours(series.max_hours)} h</span><span>0 h</span></div>` : '<span class="season-chart-empty">No weekly hours data</span>'}`;
+      </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_tss)} TSS</span><span>0 TSS</span></div>` : '<span class="season-chart-empty">No weekly TSS data</span>'}`;
     }
 
     function seasonHorizonLayout(phases, currentWeek, selectedDate, today) {
@@ -10124,7 +10140,7 @@ HTML_TEMPLATE = """<!doctype html>
           </div>
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <div class="season-chart-key"><strong>Weekly moving hours</strong><span><i aria-hidden="true"></i>Scheduled range</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded</span></div>
+              <div class="season-chart-key"><strong>Weekly TSS</strong><span><i aria-hidden="true"></i>Planned range / forecast</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded load</span></div>
               <div class="season-track-actions">
                 <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
                 <button type="button" class="season-today-button" data-season-today aria-label="${escapeHtml(todayDescription)}" title="${escapeHtml(todayDescription)}"${canJumpToday ? "" : " disabled"}><i aria-hidden="true"></i>Today</button>
@@ -11355,14 +11371,58 @@ def _duration_to_hours(value: float, unit: str) -> float:
     return value / 60.0 if unit.lower().startswith("m") else value
 
 
-def _extract_planned_hour_range(plan_text: str) -> tuple[float | None, float | None]:
+def _extract_planned_hour_range(
+    plan_text: str, *, interval_context: bool = False
+) -> tuple[float | None, float | None]:
     text = _strip_interval_durations(plan_text)
     ranges: list[tuple[float, float]] = []
+
+    def whole_session(match: re.Match[str], source: str) -> bool:
+        if not interval_context:
+            return True
+        before, after = source[: match.start()], source[match.end() :]
+        # Once reps are present, a remaining "5min easy" or warmup is not
+        # evidence for the duration of the entire ride. Require an explicit
+        # whole-session context, such as "90min total" or "2h Z2 with ...".
+        explicit_total = bool(
+            re.search(
+                r"\b(?:total|overall|entire)(?:\s+(?:ride|workout|session|time|duration)){0,3}\s*[:=]?\s*$"
+                r"|\b(?:ride|workout|session)\s+(?:duration|time)\s*[:=]?\s*$",
+                before,
+                re.IGNORECASE,
+            )
+            or re.match(r"\s*(?:total|overall|in\s+total)\b", after, re.IGNORECASE)
+        )
+        if explicit_total:
+            return True
+        after_intro = re.split(r"(?<![\w.])\d|[,;]", after, maxsplit=1)[0]
+        if re.search(
+            r"\b(?:between|recovery|recoveries|warm[- ]?up|cool[- ]?down|rest)\b",
+            f"{before.rsplit(',', 1)[-1]} {after_intro}",
+            re.IGNORECASE,
+        ):
+            return False
+        return bool(
+            re.search(
+                r"\b(?:ride|workout|session)(?:\s+(?:for|of))?\s*[:=]?\s*$",
+                before,
+                re.IGNORECASE,
+            )
+            or re.match(
+                r"\s*(?:(?:easy|steady|controlled|endurance|z[1-7]|zone\s+[1-7]|tempo|threshold|vo2|sweet\s+spot)\s+){0,4}"
+                r"(?:ride|workout|session|with|including)\b",
+                after,
+                re.IGNORECASE,
+            )
+        )
+
     range_pattern = re.compile(
         r"(?<![\w.+-])(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|min|mins|minute|minutes)\b",
         re.IGNORECASE,
     )
     for match in range_pattern.finditer(text):
+        if not whole_session(match, text):
+            continue
         start = _duration_to_hours(float(match.group(1)), match.group(3))
         end = _duration_to_hours(float(match.group(2)), match.group(3))
         ranges.append((min(start, end), max(start, end)))
@@ -11371,7 +11431,10 @@ def _extract_planned_hour_range(plan_text: str) -> tuple[float | None, float | N
         r"(?<![\w.+-])(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|min|mins|minute|minutes)\b",
         re.IGNORECASE,
     )
-    for match in single_pattern.finditer(range_pattern.sub(" ", text)):
+    singles_text = range_pattern.sub(" ", text)
+    for match in single_pattern.finditer(singles_text):
+        if not whole_session(match, singles_text):
+            continue
         hours = _duration_to_hours(float(match.group(1)), match.group(2))
         ranges.append((hours, hours))
 
@@ -11425,6 +11488,10 @@ def _load_number(value: float, *, digits: int = 1) -> str:
     return text.rstrip("0").rstrip(".") if digits else text
 
 
+def _tss_number(value: float) -> str:
+    return f"{math.floor(value + 0.5):,}"
+
+
 def _planned_load_display(load: dict[str, Any]) -> dict[str, Any]:
     result = dict(load)
     value = _safe_float(load.get("estimated_tss"))
@@ -11433,10 +11500,10 @@ def _planned_load_display(load: dict[str, Any]) -> dict[str, Any]:
     if value is None:
         number = "--"
     elif low is not None and high is not None and low != high:
-        digits = 0 if load.get("estimated") else 1
-        number = f"{_load_number(low, digits=digits)}–{_load_number(high, digits=digits)}"
+        low_label, high_label = _tss_number(low), _tss_number(high)
+        number = low_label if low_label == high_label else f"{low_label}–{high_label}"
     else:
-        number = _load_number(value, digits=0 if load.get("estimated") else 1)
+        number = _tss_number(value)
     hours_low = _safe_float(load.get("hours_min"))
     hours_high = _safe_float(load.get("hours_max"))
     if hours_low is None or hours_high is None:
@@ -11558,10 +11625,14 @@ def _planned_load_for_day(
         if any(noncycling_pattern.search(part) for part in parts):
             intensity = None
     else:
+        interval_context = _strip_interval_durations(forecast_text) != _normalize_plan_text(
+            forecast_text
+        )
         durations = [
             bounds
             for part in forecast_parts
-            if (bounds := _extract_planned_hour_range(part))[1] is not None
+            if (bounds := _extract_planned_hour_range(part, interval_context=interval_context))[1]
+            is not None
         ]
         hours_min, hours_max = durations[0] if len(durations) == 1 else (None, None)
         if hours_max is not None and _has_off_option(forecast_text):
@@ -11766,9 +11837,9 @@ def _kj_label(kilojoules: Any) -> str:
 
 def _tss_label(tss: Any) -> str:
     numeric = _safe_float(tss)
-    if numeric is None:
+    if numeric is None or numeric < 0:
         return "-- TSS"
-    return f"{_load_number(numeric)} TSS"
+    return f"{_tss_number(numeric)} TSS"
 
 
 def _load_display(
@@ -11784,7 +11855,7 @@ def _load_display(
 ) -> dict[str, Any]:
     numeric = _safe_float(value)
     available = numeric is not None and math.isfinite(numeric) and numeric >= 0
-    short = _load_number(numeric) if available else None
+    short = _tss_number(numeric) if available else None
     return {
         "tss_label": f"{short} TSS" if short is not None else None,
         "tss_short_label": short,
@@ -11835,12 +11906,12 @@ def _activity_load_display(activity: dict[str, Any]) -> dict[str, Any]:
     coverage_label = _power_coverage_label(coverage, partial=partial) if partial else ""
     if partial:
         coverage_text = (
-            f"{coverage_label.removesuffix(' power coverage')} of reported moving time"
+            f"Recorded power duration is {coverage_label.removesuffix(' power coverage')} of reported moving time. "
             if coverage is not None and math.isfinite(coverage) and 0 <= coverage <= 1
-            else "the recorded power intervals"
+            else "Some recorded power is missing. "
         )
         description = (
-            f"Calculated from {coverage_text}, using your currently configured FTP. "
+            f"{coverage_text}Calculated from available power using your currently configured FTP. "
             "Missing power data is not extrapolated."
         )
     elif source == "estimated_power_stream":
@@ -11893,7 +11964,7 @@ def _totals_load_display(totals: dict[str, Any]) -> dict[str, Any]:
     ]
     if partial_streams > 0:
         descriptions.append(
-            f"{coverage_label} across rides calculated from recorded power."
+            f"{coverage_label}, measured as recorded power duration relative to reported moving time."
             if coverage_label
             else "Some recorded power is missing."
         )

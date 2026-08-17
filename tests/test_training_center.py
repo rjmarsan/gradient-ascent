@@ -1030,6 +1030,7 @@ class TrainingCenterTest(unittest.TestCase):
         row = {
             "start_date": "2026-07-06",
             "end_date": "2026-07-12",
+            "plan": {"tss_target": {"min": 300, "max": 350}},
             "status_meaningful": "below",
             "totals": {"estimated_tss": None},
         }

@@ -117,7 +117,7 @@ class DashboardLoadDisplayTest(unittest.TestCase):
         self.assertEqual(mixed["hours"], 1)
         self.assertEqual(mixed["tss_source"], "session_if_forecast")
 
-    def test_incomplete_recorded_load_does_not_drive_week_status(self):
+    def test_week_status_never_falls_back_to_hours_or_rough_forecasts(self):
         row = {
             "start_date": "2026-08-10",
             "end_date": "2026-08-16",
@@ -131,7 +131,13 @@ class DashboardLoadDisplayTest(unittest.TestCase):
             }
         ]
         self.assertEqual(
-            training_center._week_display_status(row, days, today=date(2026, 8, 10)), "within"
+            training_center._week_display_status(row, days, today=date(2026, 8, 10)),
+            "budget_missing",
+        )
+        row["plan"] = {"tss_target": {"min": 100, "max": 150}}
+        self.assertEqual(
+            training_center._week_display_status(row, days, today=date(2026, 8, 17)),
+            "load_incomplete",
         )
 
     def test_structured_sum_does_not_turn_an_invalid_upper_bound_into_an_exact_value(self):
@@ -150,15 +156,92 @@ class DashboardLoadDisplayTest(unittest.TestCase):
         self.assertIsNone(result["hours"])
         self.assertEqual(result["estimated_tss"], 300)
 
-    def test_week_hours_budget_is_visible_without_inventing_daily_load(self):
+    def test_week_hours_remain_visible_without_inventing_a_tss_budget(self):
         days = [{"planned_load": training_center._planned_load_for_day("3x10min threshold", [])}]
         result = training_center._planned_load_for_week(days, hours_target={"min": 8, "max": 10})
         self.assertEqual((result["hours_min"], result["hours_max"]), (8, 10))
-        self.assertEqual(result["tss_source"], "weekly_hours_budget")
+        self.assertEqual(result["tss_source"], "missing")
+        self.assertIsNone(result["estimated_tss"])
         self.assertEqual(result["known_tss_days"], 0)
         self.assertIsNone(days[0]["planned_load"]["hours"])
-        self.assertIn("weekly", result["qualifier"].lower())
+        self.assertEqual(result["qualifier"], "Budget not set")
         self.assertTrue(result["tss_value_label"].endswith(" TSS"))
+
+    def test_coach_budget_range_ceiling_and_review_state_are_distinct(self):
+        coach = {
+            "state": "current",
+            "target_tss": 350,
+            "range": {"min": 330, "max": 370},
+            "ceiling_tss": 400,
+            "status": "provisional",
+            "revision": 2,
+            "conditions": ["Synthetic condition"],
+            "rationale": "Synthetic coaching rationale.",
+            "override_source": False,
+        }
+        load = training_center._planned_load_for_week(
+            [], hours_target={"min": 8, "max": 10}, coach_budget=coach
+        )
+        self.assertEqual(
+            (load["estimated_tss_min"], load["estimated_tss"], load["estimated_tss_max"]),
+            (330, 350, 370),
+        )
+        self.assertEqual(load["budget_ceiling_label"], "400 TSS")
+        self.assertEqual(load["qualifier"], "Coach budget · provisional")
+        self.assertIn("Synthetic coaching rationale", load["note"])
+        self.assertFalse(load["budget_review_required"])
+        imported = training_center._planned_load_for_week(
+            [], tss_target={"min": 450, "max": 450}, coach_budget=coach
+        )
+        self.assertEqual(imported["tss_source"], "source_target")
+        override = training_center._planned_load_for_week(
+            [], tss_target={"min": 450, "max": 450}, coach_budget={**coach, "override_source": True}
+        )
+        self.assertEqual(override["qualifier"], "Coach override · provisional")
+        stale = training_center._planned_load_for_week(
+            [], coach_budget={**coach, "state": "needs_review"}
+        )
+        self.assertIsNone(stale["estimated_tss"])
+        self.assertEqual(stale["qualifier"], "Budget needs review")
+        self.assertTrue(stale["budget_review_required"])
+
+    def test_week_status_compares_explicit_tss_and_honors_ceiling(self):
+        coach = {
+            "state": "current",
+            "target_tss": 350,
+            "range": {"min": 330, "max": 370},
+            "ceiling_tss": 400,
+            "status": "confirmed",
+            "override_source": False,
+        }
+        load = training_center._planned_load_for_week([], coach_budget=coach)
+        row = {
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-16",
+            "status_meaningful": "below",
+            "actual_hours": 1,
+            "target_hours": {"min": 8, "max": 10},
+            "totals": {"estimated_tss": 350},
+        }
+        self.assertEqual(
+            training_center._week_display_status(row, [], planned_load=load, period="completed"),
+            "within_budget",
+        )
+        self.assertEqual(
+            training_center._week_display_status(row, [], planned_load=load, period="future"),
+            "budget_set",
+        )
+        row["totals"]["estimated_tss"] = 401
+        self.assertEqual(
+            training_center._week_display_status(row, [], planned_load=load, period="completed"),
+            "above_ceiling",
+        )
+        zero = training_center._planned_load_for_week([], tss_target={"min": 0, "max": 0})
+        row["totals"]["estimated_tss"] = 0
+        self.assertEqual(
+            training_center._week_display_status(row, [], planned_load=zero, period="completed"),
+            "within_budget",
+        )
 
     def test_actual_scores_show_decimal_value_and_specific_coverage(self):
         totals = AggregateTotals()

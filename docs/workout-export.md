@@ -42,6 +42,10 @@ completion, or promise an identical device score. Open targets, insufficient
 duration, or missing FTP for watt-based targets can leave forecast TSS unknown
 without preventing an otherwise valid workout export. See
 [training-load calculations](training-load.md#planned-load).
+An explicit coach-authored weekly TSS budget is a separate plan decision; it does
+not manufacture workout steps or make a device file executable. Prescribed-session
+calculations can inform that decision without silently double-counting an overlapping
+calendar entry.
 
 ## Author explicit workout steps
 

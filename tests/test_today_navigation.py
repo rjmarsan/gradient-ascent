@@ -148,6 +148,7 @@ console.log(JSON.stringify({hidden, refreshes, delays:timers.map(item=>item.dela
         result = self._run(
             """
 const DATA = {weeks:[{start_date:'2026-08-17',end_date:'2026-08-23',days:[]}]};
+const TODAY = '2026-08-17';
 const state = {selectedWeekStart:'2026-08-17'};
 const calls = [];
 let missing = false, disabled = false;
@@ -176,6 +177,8 @@ function requestAnimationFrame() {}
 function syncWeekIntervalLists() {}
 """
             + self._functions("seasonFocusKey", "function renderCalendar(")
+            + self._functions("weekStatusForToday", "function renderCalendarWeekStat(")
+            + self._functions("renderWeekBudgetDetail", "function renderWeek(")
             + self._functions("renderWeek", "function bindSeasonHorizon(")
             + """
 const results = [];

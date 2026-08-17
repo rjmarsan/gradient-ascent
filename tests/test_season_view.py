@@ -59,19 +59,21 @@ class SeasonViewTest(unittest.TestCase):
         self.assertEqual(empty["selection"]["width"], 0)
         self.assertIsNone(empty["today_marker"])
 
-    def test_full_season_has_unique_ids_real_race_dates_and_forecast_disclosure(self):
+    def test_full_season_has_unique_ids_real_race_dates_and_budget_provenance(self):
         week = {
             "start_date": "2026-08-10",
             "end_date": "2026-08-16",
             "phase": "Build",
             "planned_load": {
                 "estimated_tss": 441,
-                "estimated_tss_min": 242,
-                "estimated_tss_max": 722.5,
-                "estimated": True,
-                "tss_source": "weekly_hours_budget",
-                "assumed_if_min": 0.55,
-                "assumed_if_max": 0.85,
+                "estimated_tss_min": 400,
+                "estimated_tss_max": 480,
+                "estimated": False,
+                "tss_source": "coach_budget",
+                "budget_status": "provisional",
+                "budget_ceiling_tss": 500,
+                "qualifier": "Coach budget · provisional",
+                "note": "Synthetic coaching rationale.",
             },
             "totals": {"estimated_tss": 375.4},
         }
@@ -103,7 +105,11 @@ class SeasonViewTest(unittest.TestCase):
         self.assertIn('data-season-end="2026-12-31"', full)
         self.assertIn("2026 training load", full)
         self.assertIn("central estimate 441 TSS", full)
-        self.assertIn("IF 0.55–0.85", full)
+        self.assertIn("Coach budget · provisional", full)
+        self.assertIn("planning ceiling 500 TSS", full)
+        self.assertIn("Synthetic coaching rationale", full)
+        self.assertIn("coach-budget weeks", full)
+        self.assertNotIn("IF 0.55–0.85", full)
         self.assertIn("not measured fitness", full)
         self.assertIn("data-season-race-marker", full)
         self.assertIn("A &amp; B criterium", full)

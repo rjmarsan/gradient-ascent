@@ -285,6 +285,25 @@ def _parse_args() -> argparse.Namespace:
         help="Optional output dir (defaults to config data_dir/plan)",
     )
 
+    budget_update_parser = subparsers.add_parser(
+        "update-tss-budgets", help="Save explicit coach-authored weekly TSS budgets"
+    )
+    budget_update_parser.add_argument("--file", required=True, help="Version 1 budget draft JSON")
+    budget_update_parser.add_argument(
+        "--replace", action="store_true", help="Replace the complete coach-budget set"
+    )
+    budget_update_parser.add_argument(
+        "--no-rebuild", action="store_true", help="Save without rebuilding local insights and dashboard"
+    )
+    budget_status_parser = subparsers.add_parser(
+        "tss-budget-status", help="Show local coach-budget counts and review status"
+    )
+    budget_status_parser.add_argument(
+        "--fingerprints",
+        action="store_true",
+        help="Also show source-week dates and plan fingerprints",
+    )
+
     export_plan_parser = subparsers.add_parser(
         "export-plan", help="Export a private planned calendar or explicit device workouts"
     )
@@ -668,6 +687,7 @@ def _init_data_dir_unlocked(data_dir: Path) -> dict[str, object]:
     )
     _write_json_if_missing(data_dir / "plan" / "weeks.json", [])
     _write_json_if_missing(data_dir / "plan" / "workouts.json", {"version": 1, "workouts": []})
+    _write_json_if_missing(data_dir / "plan" / "tss_budgets.json", {"version": 1, "budgets": []})
     _write_json_if_missing(data_dir / "plan" / "phases.json", [])
     _write_json_if_missing(data_dir / "plan" / "legend.json", {"markers": {}, "notes": None})
     _write_json_if_missing(data_dir / "plan" / "daily_notes.json", {"version": 1, "notes": {}})
@@ -729,6 +749,67 @@ def main() -> None:
         return
 
     ensure_private_data_dir(config.data_dir, action=f"run {args.command}")
+
+    if args.command in {"update-tss-budgets", "tss-budget-status"}:
+        from .tss_budgets import (
+            plan_tss_budget_fingerprints,
+            tss_budget_summary,
+            update_tss_budgets,
+        )
+        from .workspace_lock import workspace_identity, workspace_lock
+
+        try:
+            identity = workspace_identity(config.data_dir)
+            with workspace_lock(config.data_dir, expected_identity=identity):
+                if args.command == "tss-budget-status":
+                    result = {**tss_budget_summary(config.data_dir), "external_access": False}
+                    if args.fingerprints:
+                        result["weeks"] = [
+                            {"start_date": start, "end_date": end, "plan_fingerprint": fingerprint}
+                            for (start, end), fingerprint in sorted(
+                                plan_tss_budget_fingerprints(config.data_dir).items()
+                            )
+                        ]
+                else:
+                    try:
+                        updated = update_tss_budgets(
+                            config.data_dir,
+                            Path(args.file),
+                            replace=args.replace,
+                            expected_identity=identity,
+                        )
+                    except ValueError as exc:
+                        # This schema-owned API uses controlled validation
+                        # messages. Unrelated readers/builders below do not.
+                        raise SystemExit(str(exc)) from None
+                    result = {
+                        **updated,
+                        "rebuilt": False,
+                        "external_access": False,
+                    }
+                    if not args.no_rebuild:
+                        from .training_center import build_training_center
+
+                        # Reproject the current source plan before rendering.
+                        # No configured imports or provider refresh is needed.
+                        calendar = config.data_dir / "calendar.json"
+                        with workspace_lock(config.data_dir, expected_identity=identity):
+                            build_insights(
+                                config.data_dir,
+                                calendar if calendar.exists() else None,
+                                config.data_dir / "derived",
+                            )
+                        with workspace_lock(config.data_dir, expected_identity=identity):
+                            build_training_center(config.data_dir)
+                        result["rebuilt"] = True
+                with workspace_lock(config.data_dir, expected_identity=identity):
+                    pass
+        except (OSError, RuntimeError, ValueError):
+            raise SystemExit(
+                "TSS budget action could not finish safely. Check the workspace and retry."
+            ) from None
+        print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        return
 
     if args.command == "export-plan":
         from .plan_export import write_plan_export

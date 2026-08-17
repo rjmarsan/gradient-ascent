@@ -192,6 +192,12 @@ Companions are optional and installed separately. They own any authentication an
 
 The plan builder accepts the shipped weekly matrix format and daily rows with at least `Date` and `Workout` columns. See [the weekly example](examples/calendar/sample-training-calendar.csv) and [the daily example](examples/calendar/sample-daily-plan.csv). An unrecognized file fails without replacing the current plan. The prompt flow can also record that the rider has no existing plan and continue without one.
 
+Weekly `TSS Target` and daily `Planned TSS` columns preserve explicit source
+targets. Ask `$coach-setup-plan` to create or revise a coach-authored weekly TSS
+budget from your goals, recent scored training, recovery, and event priorities.
+Budgets are private plan decisions, not numbers inferred from available hours.
+See [planned load and coach budgets](docs/training-load.md#planned-load).
+
 ### Export a planned schedule
 
 Choose **More > Export planned schedule** in the Training Center, or run
@@ -219,8 +225,11 @@ missing. Local-only refresh can repair older recordings from retained,
 digest-verified originals without contacting a provider. FIT session scores and
 timer duration are preserved, and heart-rate gaps do not discard valid power.
 The season chart shows the central planned TSS trajectory, its range, and recorded
-load; hours remain visible in the week totals. Scheduled TSS uses imported targets
-first, then clearly labeled planning forecasts when enough information is available.
+load; hours remain visible in the week totals. Its planned load comes from explicit
+source or coach budgets, or a complete sum of prescribed-session targets. Missing
+budgets stay missing; available hours and rough session estimates do not silently
+become a weekly target. Recorded-day cards show actual stats while the week totals
+retain the plan comparison.
 Generated ride titles can use a planned-workout name for display without claiming
 the workout was followed.
 See [training load and ride labels](docs/training-load.md) for the calculation and limits.

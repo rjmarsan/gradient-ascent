@@ -39,6 +39,45 @@ Preserve event markers from generic `Events` or cycling-discipline columns, incl
 
 Inspect `plan/weeks.json`, `plan/events.json`, and `derived/training_center.html`.
 
+## Coach-authored weekly TSS budgets
+
+When the rider asks to create or revise a training plan, treat its weekly TSS budget
+as an explicit coaching decision. Read `plan/goals.md`, relevant plan weeks and
+events, recent compact recorded-load summaries and their completeness, recovery
+constraints, and the intended key sessions. Explain which goal the proposed load
+serves, what it protects, and what would trigger a reduction or review. Do not
+derive a budget from available hours, invent historical targets, or prescribe extra
+riding merely to fill a TSS shortfall. A budget is not a measured result or a quota.
+
+Preserve imported weekly `TSS Target` and daily `Planned TSS` values. Fully prescribed
+workouts can support a separately labeled load calculation; rough estimates from
+session descriptions are not a weekly coaching budget. If the information is
+insufficient, leave the budget unset and identify the specific decision needed.
+
+Draft agreed budgets outside the workspace. For automated drafts, obtain the current
+week fingerprints and copy the matching value into `expected_plan_fingerprint`.
+Then use the validated, locked command:
+
+```bash
+"$COACH_CLI" tss-budget-status --fingerprints
+"$COACH_CLI" update-tss-budgets --file /path/to/tss-budgets-draft.json
+"$COACH_CLI" tss-budget-status
+```
+
+The private `plan/tss_budgets.json` is separate from imported calendar files and
+survives reimport. The normal update rebuilds local insights and the dashboard from
+the current plan without configured imports or provider requests; `--no-rebuild`
+defers both rebuilds. Do not write the budget file directly. An imported source target wins unless
+the rider explicitly chooses an override; a conflicting draft is rejected otherwise.
+A change to relevant goals, profile, events, or prescriptions can
+make a stored budget require review; review and deliberately reissue it instead of
+silently accepting the old target. Use `--replace` only when the rider intends to
+replace the complete set of coach budgets. Reapproving a changed plan requires its
+current fingerprint. See the
+[public training-load guide](https://github.com/rjmarsan/gradient-ascent/blob/main/docs/training-load.md#coach-authored-budgets)
+and [synthetic budget example](https://github.com/rjmarsan/gradient-ascent/blob/main/examples/calendar/sample-tss-budgets.json)
+for the draft schema and precedence rules. Example numbers are not a prescription.
+
 ## Optional device workouts and schedule export
 
 Offer this only when the rider asks for a downloadable schedule or executable device
@@ -92,3 +131,6 @@ the Training Center was rebuilt, and the exact next missing input. If an export 
 requested, also report its path, date range, calendar-entry count, device-ready
 workout count, and any validation errors. Do not claim a provider upload or device
 transfer occurred unless it was separately requested and verified.
+When budgets were requested, also report the affected weeks, agreed targets or
+ranges, provisional versus confirmed decisions, source conflicts, and budgets
+still missing or requiring review.

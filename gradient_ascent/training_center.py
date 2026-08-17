@@ -27,6 +27,7 @@ from .planned_load import (
 from .planned_workouts import load_structured_workouts
 from .progress import build_progress_artifact
 from .storage import ensure_text_line, read_json, write_json, write_text
+from .tss_budgets import load_tss_budgets
 from .workspace_lock import cross_process_locking_available, workspace_lock
 
 
@@ -6748,6 +6749,10 @@ HTML_TEMPLATE = """<!doctype html>
     .week-plan-values { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; color: #556b56; font-size: .64rem; font-variant-numeric: tabular-nums; }
     .week-plan-values strong { font-weight: 500; }
     .week-load-note { margin: 3px 0 7px; color: #8c674f; font-size: .53rem; line-height: 1.35; overflow-wrap: anywhere; }
+    .week-budget-note { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); color: var(--muted); font-size: .68rem; line-height: 1.5; overflow-wrap: anywhere; }
+    .week-budget-note p { margin: 0 0 7px; }
+    .week-budget-note ul { margin: 5px 0 0; padding-left: 18px; }
+    .week-budget-note strong { color: var(--ink); }
     .week-structured-plan { margin-top: 7px; padding-top: 6px; border-top: 1px solid rgba(23,63,49,.1); color: #627362; font-size: .58rem; line-height: 1.4; overflow-wrap: anywhere; }
     .rail-load-note { margin: 7px 0 0; color: rgba(229, 228, 207, .76); font-size: .62rem; line-height: 1.45; }
 
@@ -9102,6 +9107,37 @@ HTML_TEMPLATE = """<!doctype html>
         </div>`;
     }
 
+    function weekStatusForToday(week, today = TODAY) {
+      const validDate = (value) => {
+        if (typeof value !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value)) return false;
+        const time = Date.parse(`${value}T00:00:00Z`);
+        return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+      };
+      if (!validDate(today) || !validDate(week?.start_date) || !validDate(week?.end_date) || week.end_date < week.start_date) {
+        return { status: "budget_missing", label: "Budget not set" };
+      }
+      const period = today < week.start_date ? "future" : today > week.end_date ? "completed" : "current";
+      const variant = week.status_by_period?.[period];
+      return variant && typeof variant.status === "string" && typeof variant.label === "string"
+        ? variant : { status: week.status || "", label: week.status_label || "Plan loaded" };
+    }
+
+    function weekStatusCopy(week, status) {
+      const descriptions = {
+        budget_missing: "No weekly TSS budget or complete prescribed-session total is set. Hours remain a separate constraint.",
+        budget_review: "The coaching plan changed. Review this budget before using it.",
+        budget_set: "The week's load budget is set. Provisional targets remain open to coaching review.",
+        in_progress: "Recorded load is accumulating against the week's budget. No daily pacing is assumed.",
+        load_incomplete: "Some recorded load is missing, so this total cannot establish whether the budget was met.",
+        above_ceiling: `Recorded load exceeds the explicit planning ceiling. Review recovery and optional work.${week.tss_partial ? " Some load is still missing." : ""}`,
+        above_budget: "Recorded load finished above the intended budget. Review what the week required.",
+        below_budget: "Recorded load finished below the intended budget. No catch-up riding is required.",
+        within_budget: "Recorded load finished within the intended budget.",
+        not_measured: "No comparable recorded-load evidence is available for this week."
+      };
+      return descriptions[status] || "The plan and recorded activities are loaded for this week.";
+    }
+
     function renderCalendarWeekStat(row) {
       const anchorDay = row.find(Boolean);
       const week = anchorDay ? weekForDate(anchorDay.date) : null;
@@ -9115,7 +9151,7 @@ HTML_TEMPLATE = """<!doctype html>
         <button class="calendar-week-stat" type="button" data-week-start="${escapeHtml(week.start_date)}" title="Open ${escapeHtml(dayLabel(week.start_date))} week">
           <span class="stat-label">${escapeHtml(dayLabel(week.start_date))} week</span>
           <strong>${escapeHtml(week.meaningful_ride_hours_label)}</strong>
-          <span class="week-stat-line"><span>${escapeHtml(week.target_hours_label)}</span><span>${escapeHtml(week.status_label)}</span></span>
+          <span class="week-stat-line"><span>${escapeHtml(week.target_hours_label)}</span><span>${escapeHtml(weekStatusForToday(week).label)}</span></span>
           <span>${escapeHtml(energyLabel)}</span>
           <span>${stats.intervalDays} int / ${stats.bigDays} big / ${stats.raceDays} race</span>
         </button>`;
@@ -10031,6 +10067,8 @@ HTML_TEMPLATE = """<!doctype html>
         const end = dateTime(week?.end_date) + dayMs;
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end <= spanStart || start >= spanEnd) return null;
         const plan = week.planned_load || {};
+        const legacyHoursForecast = ["weekly_hours_budget", "session_if_forecast"].includes(plan.tss_source)
+          || (plan.tss_source === "complete_daily_sum" && plan.estimated === true);
         let targetMin = numeric(plan.estimated_tss_min);
         let targetMax = numeric(plan.estimated_tss_max);
         if (plan.estimated_tss_min == null && plan.estimated_tss_max == null) {
@@ -10040,6 +10078,7 @@ HTML_TEMPLATE = """<!doctype html>
         let targetValue = plan.estimated_tss == null && targetMin !== null
           ? (targetMin + targetMax) / 2 : numeric(plan.estimated_tss);
         if (targetMin === null || targetValue === null || targetValue < targetMin || targetValue > targetMax) targetValue = null;
+        if (legacyHoursForecast) targetMin = targetMax = targetValue = null;
         const actual = numeric(week.totals?.estimated_tss);
         const future = !Number.isFinite(todayTime) || start > todayTime;
         const clippedStart = Math.max(start, spanStart);
@@ -10053,7 +10092,9 @@ HTML_TEMPLATE = """<!doctype html>
           target_qualifier: String(plan.qualifier || (plan.estimated ? "Forecast" : "")),
           target_source: String(plan.tss_source || ""), target_estimated: plan.estimated === true,
           target_note: String(plan.note || ""),
-          target_if_min: numeric(plan.assumed_if_min), target_if_max: numeric(plan.assumed_if_max),
+          target_status: String(plan.budget_status || ""),
+          target_ceiling: numeric(plan.budget_ceiling_tss),
+          target_review_required: plan.budget_review_required === true,
           recorded_tss: future ? null : actual,
           recorded_qualifier: String(week.tss_qualifier || ""),
           recorded_partial: week.tss_partial === true,
@@ -10097,7 +10138,7 @@ HTML_TEMPLATE = """<!doctype html>
       const qualify = (label, qualifier) => qualifier ? `${label} (${qualifier})` : label;
       const targetLow = row.target_min === null ? null : seasonTss(row.target_min);
       const targetHigh = row.target_max === null ? null : seasonTss(row.target_max);
-      const target = row.target_min === null ? "Planned TSS unavailable"
+      const target = row.target_min === null ? (row.target_review_required ? "TSS budget needs review" : "TSS budget not set")
         : qualify(targetLow === targetHigh ? `Planned ${targetLow} TSS`
           : `Planned ${targetLow}–${targetHigh} TSS`, row.target_qualifier);
       const actual = row.recorded_tss === null
@@ -10105,24 +10146,24 @@ HTML_TEMPLATE = """<!doctype html>
         : qualify(`Recorded ${seasonTss(row.recorded_tss)} TSS${row.to_date ? " so far" : ""}`, row.recorded_qualifier);
       const center = row.target_value !== null && row.target_min !== row.target_max
         ? ` · central estimate ${seasonTss(row.target_value)} TSS` : "";
-      return `${target}${center} · ${actual}`;
+      const ceiling = row.target_min != null && typeof row.target_ceiling === "number" && Number.isFinite(row.target_ceiling)
+        ? ` · planning ceiling ${seasonTss(row.target_ceiling)} TSS` : "";
+      return `${target}${center}${ceiling} · ${actual}`;
     }
 
     function seasonLoadProvenance(series) {
       const planned = series.rows.filter((row) => row.target_min !== null);
-      const forecasts = planned.filter((row) => row.target_estimated);
-      const budgets = planned.filter((row) => row.target_source === "weekly_hours_budget");
+      const budgets = planned.filter((row) => row.target_source === "coach_budget");
+      const prescribed = planned.filter((row) => ["complete_prescribed_sum", "complete_daily_sum", "structured_power_model", "structured_workout_sum"].includes(row.target_source));
+      const sources = planned.filter((row) => !budgets.includes(row) && !prescribed.includes(row));
       const recorded = series.rows.filter((row) => row.recorded_tss !== null);
-      const assumptions = [...new Set(budgets.filter((row) =>
-        row.target_if_min !== null && row.target_if_max !== null && row.target_if_max >= row.target_if_min
-      ).map((row) => `${row.target_if_min.toFixed(2)}–${row.target_if_max.toFixed(2)}`))];
-      const budgetNote = budgets.length
-        ? `${budgets.length} ${budgets.length === 1 ? "week is" : "weeks are"} forecast from weekly hours${assumptions.length === 1 ? ` (IF ${assumptions[0]})` : " using stated intensity assumptions"}. ` : "";
       return {
-        planned: planned.length, source: planned.length - forecasts.length,
-        forecast: forecasts.length, budget: budgets.length, recorded: recorded.length,
+        planned: planned.length, source: sources.length,
+        prescribed: prescribed.length, budget: budgets.length,
+        provisional: budgets.filter((row) => row.target_status === "provisional").length,
+        missing: series.rows.length - planned.length, recorded: recorded.length,
         incomplete: recorded.filter((row) => row.recorded_partial).length,
-        note: `${budgetNote}The line is the central planned estimate; shading shows its range. TSS is training load, not measured fitness.`
+        note: "The line follows coach budgets, source targets, or complete prescribed-session totals. Shading shows an intentional target range; missing budgets remain gaps. TSS is training load, not measured fitness."
       };
     }
 
@@ -10156,11 +10197,11 @@ HTML_TEMPLATE = """<!doctype html>
       }).join("");
       const hasData = series.target_runs.length || series.recorded_runs.length;
       return `<svg class="season-load-chart" viewBox="0 0 ${width} 112" preserveAspectRatio="none" aria-hidden="true">
-        <title>Weekly TSS: central planned estimate, range or forecast, and recorded load</title>
+        <title>Weekly TSS: planned budget, intentional range, and recorded load</title>
         <line class="season-chart-grid" x1="0" x2="${width}" y1="${baseline}" y2="${baseline}"></line>
         <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_tss / 2)}" y2="${y(series.max_tss / 2)}"></line>
         ${plannedArea}${targets}${recorded}${trajectory}
-        ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}`)}</title></rect>`).join("")}
+        ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}${row.target_note && row.target_min !== null ? ` · ${row.target_note}` : ""}`)}</title></rect>`).join("")}
       </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_tss)} TSS</span><span>0 TSS</span></div>` : '<span class="season-chart-empty">No weekly TSS data</span>'}`;
     }
 
@@ -10307,10 +10348,10 @@ HTML_TEMPLATE = """<!doctype html>
               ${upcoming.map((event) => raceButton(event, "upcoming")).join("")}
             </div>
           </div>
-          ${full ? `<p class="season-overview-stats"><span><strong>${provenance.source}</strong> source-target weeks</span><span><strong>${provenance.forecast}</strong> forecast weeks</span><span><strong>${provenance.recorded}</strong> recorded weeks${provenance.incomplete ? ` · ${provenance.incomplete} incomplete` : ""}</span></p>` : ""}
+          ${full ? `<p class="season-overview-stats"><span><strong>${provenance.budget}</strong> coach-budget weeks${provenance.provisional ? ` · ${provenance.provisional} provisional` : ""}</span><span><strong>${provenance.source}</strong> source-target weeks</span><span><strong>${provenance.prescribed}</strong> prescribed-session weeks</span><span><strong>${provenance.recorded}</strong> recorded weeks${provenance.incomplete ? ` · ${provenance.incomplete} incomplete` : ""}</span></p>` : ""}
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <div class="season-chart-key"><strong>Weekly TSS</strong><span class="trajectory-key"><i aria-hidden="true"></i>Planned estimate</span><span><i aria-hidden="true"></i>Planned range / forecast</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded load</span></div>
+              <div class="season-chart-key"><strong>Weekly TSS</strong><span class="trajectory-key"><i aria-hidden="true"></i>Planned budget</span><span><i aria-hidden="true"></i>Intentional range</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded load</span></div>
               <div class="season-track-actions">
                 <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
                 <button type="button" class="season-today-button" data-season-today data-season-focus="today" aria-label="${escapeHtml(todayDescription)}" title="${escapeHtml(todayDescription)}"${canJumpToday ? "" : " disabled"}><i aria-hidden="true"></i>Today</button>
@@ -10399,6 +10440,21 @@ HTML_TEMPLATE = """<!doctype html>
         .sort((left, right) => left.date.localeCompare(right.date))[0] || null;
     }
 
+    function renderWeekBudgetDetail(week) {
+      const budget = week.coach_budget;
+      if (!budget) return "";
+      const needsReview = budget.state !== "current";
+      const conditions = Array.isArray(budget.conditions) ? budget.conditions : [];
+      const target = formatTssNumber(budget.target_tss);
+      const ceiling = budget.ceiling_tss == null ? "" : ` · planning ceiling ${formatTssNumber(budget.ceiling_tss)} TSS`;
+      return `<div class="week-budget-note" aria-label="Coach TSS budget rationale">
+        <p><strong>${needsReview ? "Previous coach budget needs review" : "Coach budget"}</strong> · ${escapeHtml(budget.status || "provisional")} · ${escapeHtml(target)} TSS${escapeHtml(ceiling)}</p>
+        <p>${escapeHtml(budget.rationale || "")}</p>
+        ${needsReview ? '<p>The plan changed; this previous budget is not being used.</p>' : ""}
+        ${conditions.length ? `<ul>${conditions.map((condition) => `<li>${escapeHtml(condition)}</li>`).join("")}</ul>` : ""}
+      </div>`;
+    }
+
     function renderWeek() {
       const weekRoot = document.getElementById("week-list");
       const horizonFocus = seasonFocusKey(weekRoot);
@@ -10435,22 +10491,15 @@ HTML_TEMPLATE = """<!doctype html>
       if (select.value !== week.start_date) select.value = week.start_date;
       state.selectedWeekStart = week.start_date;
       updateWeekNavButtons();
-      const statusLabel = week.status_label || "Plan loaded";
-      const statusCopy = statusLabel === "On target"
-        ? "Actual work is tracking the plan to date."
-        : statusLabel === "Below target"
-          ? "Actual work is below the plan estimate so far."
-          : statusLabel === "Above target"
-            ? "Actual work is ahead of the plan estimate so far."
-            : statusLabel === "Not measured"
-              ? "No comparable ride-load evidence is available for this week."
-            : "The plan and recent rides are loaded for this week.";
+      const liveStatus = weekStatusForToday(week);
+      const statusLabel = liveStatus.label;
+      const statusCopy = weekStatusCopy(week, liveStatus.status);
       document.getElementById("week-list").innerHTML = `
         <article class="week-card">
           ${renderSeasonHorizon(week)}
           <div class="week-load-overview" aria-label="Scheduled and recorded week totals">
             <div><span>Scheduled hours</span><strong>${escapeHtml(week.planned_load?.hours_label || week.target_hours_label || "--")}</strong><small>${week.planned_load?.duration_source === "source_weekly_hours" ? "Weekly target" : "Scheduled duration"}</small></div>
-            <div class="forecast-value" title="${escapeHtml(week.planned_load?.note || "")}"><span>Planned TSS</span><strong>${escapeHtml(week.planned_load?.tss_value_label || "-- TSS")}</strong><small>${escapeHtml(week.planned_load?.qualifier || "Not specified")}${week.separate_structured_workout_count ? ` · ${week.separate_structured_workout_count} separate structured workout${week.separate_structured_workout_count === 1 ? "" : "s"}` : ""}</small></div>
+            <div class="forecast-value" title="${escapeHtml(week.planned_load?.note || "")}"><span>TSS budget</span><strong>${escapeHtml(week.planned_load?.tss_value_label || "-- TSS")}</strong><small>${escapeHtml(week.planned_load?.qualifier || "Budget not set")}${week.planned_load?.budget_ceiling_label ? ` · ceiling ${escapeHtml(week.planned_load.budget_ceiling_label)}` : ""}${week.planned_load?.budget_review_required && week.planned_load?.estimated_tss != null ? " · previous coach budget needs review" : ""}${week.separate_structured_workout_count ? ` · ${week.separate_structured_workout_count} separate structured workout${week.separate_structured_workout_count === 1 ? "" : "s"}` : ""}</small></div>
             <div><span>Recorded hours</span><strong>${escapeHtml(Number(week.totals?.activity_count || 0) ? week.actual_hours_label : "--")}</strong><small>${Number(week.totals?.activity_count || 0) ? "Moving time" : "No recordings"}</small></div>
             <div title="${escapeHtml(week.tss_description || "")}"><span>Recorded TSS</span><strong>${escapeHtml(week.estimated_tss_label || "-- TSS")}</strong><small>${escapeHtml(week.tss_qualifier || "No supported load")}</small></div>
           </div>
@@ -10482,7 +10531,7 @@ HTML_TEMPLATE = """<!doctype html>
                     ${week.tss_qualifier ? `<small class="load-qualifier">${escapeHtml(week.tss_qualifier)}</small>` : ""}
                   </div>
                   <div class="week-status-metric" title="${escapeHtml(week.planned_load?.note || "")}">
-                    <span>Planned TSS</span>
+                    <span>TSS budget</span>
                     <strong>${escapeHtml(week.planned_load?.tss_value_label || "-- TSS")}</strong>
                     <small class="load-qualifier">${escapeHtml(week.planned_load?.qualifier || "Not specified")}</small>
                   </div>
@@ -10511,6 +10560,7 @@ HTML_TEMPLATE = """<!doctype html>
                     <strong>${escapeHtml(String(week.totals?.activity_count || 0))}</strong>
                   </div>
                 </div>
+                ${renderWeekBudgetDetail(week)}
               </div>
             </details>
             <aside class="week-stance" aria-label="Week coaching read">
@@ -11503,6 +11553,15 @@ def _status_label(status: Any) -> str:
         "above": "Above target",
         "below": "Below target",
         "not_measured": "Not measured",
+        "budget_missing": "Budget not set",
+        "budget_review": "Needs review",
+        "budget_set": "Budget set",
+        "in_progress": "In progress",
+        "load_incomplete": "Load incomplete",
+        "above_ceiling": "Above ceiling",
+        "above_budget": "Above budget",
+        "below_budget": "Below budget",
+        "within_budget": "Within budget",
     }.get(str(status or ""), str(status or "Tracking").title())
 
 
@@ -11727,7 +11786,7 @@ def _tss_number(value: float) -> str:
     return f"{math.floor(value + 0.5):,}"
 
 
-def _planned_load_display(load: dict[str, Any]) -> dict[str, Any]:
+def _planned_load_display(load: dict[str, Any], *, weekly: bool = False) -> dict[str, Any]:
     result = dict(load)
     value = _safe_float(load.get("estimated_tss"))
     low = _safe_float(load.get("estimated_tss_min"))
@@ -11752,17 +11811,32 @@ def _planned_load_display(load: dict[str, Any]) -> dict[str, Any]:
         "source_target": "Source target",
         "explicit_rest": "Rest day",
         "session_if_forecast": "Rough forecast",
-        "weekly_hours_budget": "Rough weekly forecast",
         "structured_power_model": "Structured forecast",
         "structured_workout_sum": "Structured forecast",
-        "complete_daily_sum": "Plan forecast" if load.get("estimated") else "Source targets",
+        "complete_prescribed_sum": "Modeled prescriptions"
+        if load.get("estimated")
+        else "Prescribed targets",
     }.get(str(source or ""), "Not specified")
+    if source == "coach_budget":
+        origin = "Coach override" if load.get("budget_override_source") else "Coach budget"
+        qualifier = f"{origin} · {load.get('budget_status') or 'provisional'}"
+    elif weekly and value is None:
+        qualifier = (
+            "Budget needs review"
+            if load.get("coach_budget_state") in {"needs_review", "orphaned"}
+            else "Budget not set"
+        )
+    ceiling = _safe_float(load.get("budget_ceiling_tss"))
     result.update(
         label=f"{number} planned TSS",
         tss_value_label=f"{number} TSS",
         hours_label=hours_label,
         qualifier=qualifier,
-        confidence="estimated"
+        budget_ceiling_label=_tss_label(ceiling) if ceiling is not None and ceiling >= 0 else None,
+        budget_review_required=load.get("coach_budget_state") in {"needs_review", "orphaned"},
+        confidence="authored"
+        if source == "coach_budget"
+        else "estimated"
         if load.get("estimated")
         else "high"
         if value is not None
@@ -11911,13 +11985,16 @@ def _planned_load_for_week(
     *,
     hours_target: dict[str, Any] | None = None,
     tss_target: dict[str, Any] | None = None,
+    coach_budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _planned_load_display(
         week_planned_load(
             [day.get("planned_load") or {} for day in week_days],
             hours_target=hours_target,
             tss_target=tss_target,
-        )
+            coach_budget=coach_budget,
+        ),
+        weekly=True,
     )
 
 
@@ -11990,31 +12067,76 @@ def _week_display_status(
     week_days: list[dict[str, Any]],
     *,
     today: date | None = None,
+    planned_load: dict[str, Any] | None = None,
+    period: str | None = None,
 ) -> str:
-    fallback = str(row.get("status_meaningful") or row.get("status") or "within")
-    actual_tss = _safe_float((row.get("totals") or {}).get("estimated_tss"))
-    if actual_tss is None:
-        return "not_measured"
-    if _totals_load_display(row.get("totals") or {})["tss_partial"]:
-        return fallback
-    today_key = (today or date.today()).isoformat()
-    start_date = str(row.get("start_date") or "")
-    end_date = str(row.get("end_date") or "")
-    if not start_date or not end_date or not (start_date <= today_key <= end_date):
-        return fallback
-
-    elapsed_days = [
-        day
-        for day in week_days
-        if str(day.get("date") or "") and str(day.get("date") or "") <= today_key
-    ]
-    planned_to_date = _planned_load_for_week(elapsed_days)
-    status = _status_from_range(
-        actual_tss,
-        _safe_float(planned_to_date.get("estimated_tss_min")),
-        _safe_float(planned_to_date.get("estimated_tss_max")),
+    plan = row.get("plan") or {}
+    load = (
+        planned_load
+        if planned_load is not None
+        else _planned_load_for_week(
+            week_days,
+            hours_target=row.get("target_hours"),
+            tss_target=plan.get("tss_target"),
+        )
     )
-    return status or fallback
+    target = _safe_float(load.get("estimated_tss"))
+    minimum = _safe_float(load.get("estimated_tss_min"))
+    maximum = _safe_float(load.get("estimated_tss_max"))
+    if (
+        target is None
+        or minimum is None
+        or maximum is None
+        or not 0 <= minimum <= target <= maximum
+    ):
+        return (
+            "budget_review"
+            if load.get("coach_budget_state") in {"needs_review", "orphaned"}
+            else "budget_missing"
+        )
+    try:
+        start_text, end_text = str(row.get("start_date") or ""), str(row.get("end_date") or "")
+        start, end = date.fromisoformat(start_text), date.fromisoformat(end_text)
+    except ValueError:
+        return "budget_missing"
+    if start.isoformat() != start_text or end.isoformat() != end_text or end < start:
+        return "budget_missing"
+    if period is None:
+        current = today or date.today()
+        period = "future" if current < start else "completed" if current > end else "current"
+    if period not in {"future", "current", "completed"}:
+        return "budget_missing"
+    if period == "future":
+        return "budget_set"
+    actual_load = _totals_load_display(row.get("totals") or {})
+    actual_tss = _safe_float((row.get("totals") or {}).get("estimated_tss"))
+    if actual_tss is None or actual_tss < 0:
+        return "load_incomplete" if actual_load["tss_missing_activity_count"] else "not_measured"
+
+    def rounded(value: float) -> int:
+        return math.floor(value + 0.5)
+
+    ceiling = _safe_float(load.get("budget_ceiling_tss"))
+    if ceiling is not None and ceiling >= maximum and rounded(actual_tss) > rounded(ceiling):
+        return "above_ceiling"
+    if actual_load["tss_partial"]:
+        return "load_incomplete"
+    if period == "current":
+        return "in_progress"
+    comparison = _status_from_range(rounded(actual_tss), rounded(minimum), rounded(maximum))
+    return {"below": "below_budget", "above": "above_budget", "within": "within_budget"}.get(
+        comparison, "budget_missing"
+    )
+
+
+def _week_status_variants(
+    row: dict[str, Any], week_days: list[dict[str, Any]], planned_load: dict[str, Any]
+) -> dict[str, dict[str, str]]:
+    result = {}
+    for period in ("future", "current", "completed"):
+        status = _week_display_status(row, week_days, planned_load=planned_load, period=period)
+        result[period] = {"status": status, "label": _status_label(status)}
+    return result
 
 
 def _event_maps(events: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
@@ -13322,6 +13444,7 @@ def _build_payload(
     phases = _read(data_dir / "plan" / "phases.json", [])
     athlete = _read(data_dir / "plan" / "athlete.json", {})
     athlete = athlete if isinstance(athlete, dict) else {}
+    coach_budgets = load_tss_budgets(data_dir)
     structured_by_date = _structured_dashboard_workouts(data_dir, athlete)
     weekly_rows = list(weekly_rows) if isinstance(weekly_rows, list) else []
     covered_ranges = [
@@ -13482,7 +13605,14 @@ def _build_payload(
         meaningful_hours = row.get("meaningful_ride_hours")
         if meaningful_hours is None:
             meaningful_hours = row.get("actual_hours")
-        display_status = _week_display_status(row, week_days)
+        coach_budget = coach_budgets.get((row["start_date"], row["end_date"]))
+        planned_week_load = _planned_load_for_week(
+            week_days,
+            hours_target=target,
+            tss_target=plan.get("tss_target"),
+            coach_budget=coach_budget,
+        )
+        display_status = _week_display_status(row, week_days, planned_load=planned_week_load)
         week_load = _totals_load_display(totals)
         week_record = {
             "start_date": row["start_date"],
@@ -13512,11 +13642,24 @@ def _build_payload(
             )
             if totals.get("distance_m") is not None
             else None,
-            "planned_load": _planned_load_for_week(
-                week_days,
-                hours_target=target,
-                tss_target=plan.get("tss_target"),
-            ),
+            "planned_load": planned_week_load,
+            "coach_budget": {
+                key: coach_budget[key]
+                for key in (
+                    "state",
+                    "status",
+                    "target_tss",
+                    "range",
+                    "ceiling_tss",
+                    "rationale",
+                    "conditions",
+                    "revision",
+                    "override_source",
+                )
+                if key in coach_budget
+            }
+            if isinstance(coach_budget, dict)
+            else None,
             "separate_structured_workout_count": sum(
                 len(day["structured_workouts"])
                 for day in week_days
@@ -13526,6 +13669,7 @@ def _build_payload(
             "execution_note": (actual or {}).get("Tactical notes / sources") or "",
             "status": display_status,
             "status_label": _status_label(display_status),
+            "status_by_period": _week_status_variants(row, week_days, planned_week_load),
             "totals": totals,
             "events": week_events,
             "has_activity_details": bool(activity_ids_by_week.get(row["start_date"])),

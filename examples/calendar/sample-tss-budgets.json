@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "budgets": [
+    {
+      "start_date": "2026-04-06",
+      "end_date": "2026-04-12",
+      "target_tss": 360,
+      "range": {
+        "min": 340,
+        "max": 380
+      },
+      "ceiling_tss": 400,
+      "status": "provisional",
+      "rationale": "Synthetic format example: protect freshness for the priority event and review the proposed load against recent complete training before confirming.",
+      "conditions": [
+        "Review recovery and the event decision before confirming.",
+        "Do not add riding merely to reach the target."
+      ],
+      "override_source": false
+    }
+  ]
+}

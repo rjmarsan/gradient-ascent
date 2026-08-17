@@ -33,7 +33,9 @@ WHOLE_SESSION_IF = {
     "race_road": (0.70, 0.95),
     "race_dirt": (0.65, 0.90),
 }
-WEEKLY_BUDGET_IF = (0.55, 0.85)
+_PRESCRIBED_SOURCES = frozenset(
+    {"source_target", "explicit_rest", "structured_power_model", "structured_workout_sum"}
+)
 _NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
 _SOURCE_RANGE = re.compile(
     rf"\s*({_NUMBER})(?:\s*(?:-|–|—|to)\s*({_NUMBER}))?"
@@ -219,21 +221,61 @@ def _mapping_range(value: Any, maximum: float) -> tuple[float, float] | None:
     )
 
 
+def _strict_number(value: Any, maximum: float) -> float | None:
+    return (
+        _number(value, maximum)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
+
+
+def _prescribed_range(day: Mapping[str, Any]) -> tuple[float, float] | None:
+    if not isinstance(day.get("tss_source"), str) or day["tss_source"] not in _PRESCRIBED_SOURCES:
+        return None
+    low = _strict_number(day.get("estimated_tss_min"), MAX_DAILY_TSS)
+    high = _strict_number(day.get("estimated_tss_max"), MAX_DAILY_TSS)
+    value = _strict_number(day.get("estimated_tss"), MAX_DAILY_TSS)
+    return (
+        (low, high)
+        if low is not None and high is not None and value is not None and low <= value <= high
+        else None
+    )
+
+
+def _coach_budget_range(budget: Any) -> tuple[tuple[float, float], float] | None:
+    if not isinstance(budget, Mapping) or budget.get("state") != "current":
+        return None
+    value = _strict_number(budget.get("target_tss"), MAX_WEEKLY_TSS)
+    bounds = budget.get("range", {"min": value, "max": value})
+    if not isinstance(bounds, Mapping):
+        return None
+    low = _strict_number(bounds.get("min"), MAX_WEEKLY_TSS)
+    high = _strict_number(bounds.get("max"), MAX_WEEKLY_TSS)
+    ceiling = _strict_number(budget.get("ceiling_tss"), MAX_WEEKLY_TSS)
+    if (
+        value is None
+        or low is None
+        or high is None
+        or not low <= value <= high
+        or ("ceiling_tss" in budget and (ceiling is None or ceiling < high))
+    ):
+        return None
+    return (low, high), value
+
+
 def week_planned_load(
     day_loads: Sequence[Mapping[str, Any]],
     *,
     hours_target: Any = None,
     tss_target: Any = None,
+    coach_budget: Any = None,
 ) -> dict[str, Any]:
     if len(day_loads) > 7:
         raise ValueError("A weekly forecast accepts at most seven day loads.")
     hours_values = [
         _range(day.get("hours_min"), day.get("hours_max"), MAX_DAILY_HOURS) for day in day_loads
     ]
-    tss_values = [
-        _range(day.get("estimated_tss_min"), day.get("estimated_tss_max"), MAX_DAILY_TSS)
-        for day in day_loads
-    ]
+    tss_values = [_prescribed_range(day) for day in day_loads]
     known_hours, known_tss = (
         sum(value is not None for value in hours_values),
         sum(value is not None for value in tss_values),
@@ -246,7 +288,28 @@ def week_planned_load(
         hours = tuple(sum(value[index] for value in hours_values) for index in (0, 1))
         duration_source = "complete_daily_sum"
     source_tss = _mapping_range(tss_target, MAX_WEEKLY_TSS)
-    if source_tss is not None:
+    authored = _coach_budget_range(coach_budget)
+    if authored is not None and (source_tss is None or coach_budget.get("override_source") is True):
+        bounds, value = authored
+        result = _load(
+            hours,
+            bounds,
+            duration_source=duration_source,
+            tss_source="coach_budget",
+            method="coach_authored_v1",
+            tss_value=value,
+            note=coach_budget.get("rationale")
+            if isinstance(coach_budget.get("rationale"), str)
+            else "Explicit coach-authored weekly TSS budget; not derived from hours.",
+        )
+        result.update(
+            budget_status=coach_budget.get("status", "provisional"),
+            budget_revision=coach_budget.get("revision"),
+            budget_ceiling_tss=coach_budget.get("ceiling_tss"),
+            budget_conditions=coach_budget.get("conditions", []),
+            budget_override_source=coach_budget.get("override_source") is True,
+        )
+    elif source_tss is not None:
         result = _load(
             hours,
             source_tss,
@@ -267,34 +330,26 @@ def week_planned_load(
             hours,
             tss,
             duration_source=duration_source,
-            tss_source="complete_daily_sum",
-            method="complete_daily_sum",
+            tss_source="complete_prescribed_sum",
+            method="complete_prescribed_sum",
             estimated=any(day.get("estimated") is True for day in day_loads),
             tss_value=value,
-            note="Sum of all available daily source targets and labeled forecasts.",
-        )
-    elif explicit_hours is not None:
-        bounds, value = _forecast(explicit_hours, WEEKLY_BUDGET_IF)
-        result = _load(
-            hours,
-            bounds,
-            duration_source=duration_source,
-            tss_source="weekly_hours_budget",
-            method="weekly_hours_budget_if_v1",
-            estimated=True,
-            partial=known_tss < total,
-            assumed_if=WEEKLY_BUDGET_IF,
-            tss_value=value,
-            note="Broad weekly-hours-budget forecast using whole-week IF 0.55–0.85; no missing daily durations or workouts are assigned.",
+            note="Complete sum of explicit daily targets and prescribed structured-workout loads.",
         )
     else:
         result = _load(
             hours,
             duration_source=duration_source,
             partial=0 < known_tss < total,
-            note="Daily planned load is incomplete and no explicit weekly budget is recorded.",
+            note="No current weekly TSS budget or complete prescribed-session load is recorded; hours are not converted into TSS.",
         )
     result.update(known_hours_days=known_hours, known_tss_days=known_tss, total_days=total)
+    if isinstance(coach_budget, Mapping) and coach_budget.get("state") in (
+        "current",
+        "needs_review",
+        "orphaned",
+    ):
+        result["coach_budget_state"] = coach_budget["state"]
     return result
 
 

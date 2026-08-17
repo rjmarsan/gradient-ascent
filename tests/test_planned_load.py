@@ -48,7 +48,7 @@ class PlannedLoadTest(unittest.TestCase):
                 self.assertIsNone(load["estimated_tss"])
         self.assertIsNone(day_planned_load(tss_min=-5, tss_max=10)["estimated_tss"])
 
-    def test_weekly_source_then_complete_sum_then_separate_budget(self) -> None:
+    def test_weekly_source_then_complete_prescribed_sum_never_hours_budget(self) -> None:
         source = day_planned_load(hours_min=1, tss_min=50)
         unknown = day_planned_load()
         days = [source, unknown]
@@ -59,11 +59,10 @@ class PlannedLoadTest(unittest.TestCase):
         self.assertEqual(explicit["tss_source"], "source_target")
         complete = week_planned_load([source, source], hours_target={"min": 5, "max": 7})
         self.assertEqual(complete["estimated_tss"], 100)
-        self.assertEqual(complete["tss_source"], "complete_daily_sum")
+        self.assertEqual(complete["tss_source"], "complete_prescribed_sum")
         budget = week_planned_load(days, hours_target={"min": 5, "max": 7})
-        self.assertEqual(budget["method"], "weekly_hours_budget_if_v1")
-        self.assertEqual(budget["estimated_tss_min"], round(100 * 5 * 0.55**2, 1))
-        self.assertEqual(budget["estimated_tss_max"], round(100 * 7 * 0.85**2, 1))
+        self.assertIsNone(budget["estimated_tss"])
+        self.assertEqual((budget["hours_min"], budget["hours_max"]), (5, 7))
         self.assertEqual(
             (budget["known_hours_days"], budget["known_tss_days"], budget["total_days"]),
             (1, 1, 2),
@@ -71,6 +70,58 @@ class PlannedLoadTest(unittest.TestCase):
         self.assertIsNone(unknown["hours"])
         self.assertIsNone(unknown["estimated_tss"])
         self.assertIsNone(week_planned_load(days)["estimated_tss"])
+
+    def test_rough_daily_forecasts_never_become_a_prescribed_week_budget(self) -> None:
+        rough = day_planned_load(hours_min=1, intensity="endurance")
+        for source in ("session_if_forecast", "weekly_hours_budget", "missing"):
+            result = week_planned_load(
+                [{**rough, "tss_source": source}], hours_target={"min": 8, "max": 10}
+            )
+            self.assertIsNone(result["estimated_tss"])
+            self.assertEqual(result["known_tss_days"], 0)
+        explicit_rest = day_planned_load(is_rest=True)
+        self.assertEqual(week_planned_load([explicit_rest])["estimated_tss"], 0)
+
+    def test_current_coach_budget_precedence_and_stale_fallback(self) -> None:
+        coach = {
+            "state": "current",
+            "target_tss": 350,
+            "range": {"min": 330, "max": 370},
+            "status": "provisional",
+            "override_source": False,
+            "ceiling_tss": 400,
+        }
+        source = {"min": 450, "max": 450}
+        self.assertEqual(week_planned_load([], coach_budget=coach)["estimated_tss"], 350)
+        self.assertEqual(week_planned_load([], coach_budget=coach)["tss_source"], "coach_budget")
+        self.assertEqual(
+            week_planned_load([], tss_target=source, coach_budget=coach)["estimated_tss"], 450
+        )
+        override = {**coach, "override_source": True}
+        self.assertEqual(
+            week_planned_load([], tss_target=source, coach_budget=override)["estimated_tss"], 350
+        )
+        for state in ("needs_review", "orphaned"):
+            result = week_planned_load(
+                [], tss_target=source, coach_budget={**override, "state": state}
+            )
+            self.assertEqual(result["estimated_tss"], 450)
+        for invalid in (True, -1, math.nan, math.inf):
+            self.assertIsNone(
+                week_planned_load([], coach_budget={**coach, "target_tss": invalid})[
+                    "estimated_tss"
+                ]
+            )
+
+    def test_prescribed_sum_rejects_malformed_or_incomplete_ranges(self) -> None:
+        source = day_planned_load(tss_min=30, tss_max=40)
+        for change in (
+            {"estimated_tss_min": None},
+            {"estimated_tss_max": True},
+            {"estimated_tss_min": 50},
+            {"estimated_tss": 100},
+        ):
+            self.assertIsNone(week_planned_load([{**source, **change}])["estimated_tss"])
 
     def test_source_range_parser_preserves_units_and_rejects_ambiguous_values(self) -> None:
         self.assertEqual(parse_source_range("90", unit="minutes", maximum=24), (1.5, 1.5))

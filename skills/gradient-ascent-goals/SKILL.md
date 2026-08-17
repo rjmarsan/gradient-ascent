@@ -65,6 +65,13 @@ Omit `--measurement-file` when only the coaching contract changed. Never copy ei
 - If the athlete says "feel good," define what that means behaviorally before pretending it is measurable.
 - If a proposed goal cannot be evaluated at all, keep it as a value or preference, not a tracked goal.
 - If a measurement would create perverse behavior, do not use it just because it graphs cleanly.
+- TSS is a training-load measure, not a goal by itself. Translate the goal hierarchy,
+  event priorities, recent scored training, recovery, and constraints into explicit
+  weekly budget decisions only when the rider requests a plan change. Keep those
+  decisions in the separate validated `plan/tss_budgets.json` workflow described by
+  `$coach-setup-plan`; do not hide an invented hours-based budget in goal-measurement
+  code or turn a load target into a quota. Preserve missing or review-needed budgets
+  as unresolved coaching decisions.
 
 ## Useful Examples
 

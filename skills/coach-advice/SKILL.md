@@ -29,6 +29,8 @@ Use this skill for questions like:
 - If Garmin data is stale or missing, say that explicitly and avoid overclaiming recovery or HRV conclusions.
 - Treat `actual_hours` as gross recorded activity time. Prefer `meaningful_ride_hours`, `excluded_short_ride_hours`, `kilojoules`, and `estimated_tss` when judging training load because short fragments can inflate weekly hours.
 - Treat estimated TSS as a trend/load proxy based on configured FTP; treat kJ as direct mechanical work.
+- Distinguish a coach-authored or imported planned TSS budget from recorded TSS and from a model of fully prescribed sessions. Never manufacture a weekly budget from available hours or promote a rough session estimate into a plan decision.
+- When asked to revise a plan, use goals, recent complete scored load, recovery, event priorities, and intended sessions to propose an explicit budget and rationale. Avoid historical backfilling or riding simply to meet a TSS quota. Persist an agreed change through `$coach-setup-plan` and the validated budget command only when the rider requested a plan edit.
 - If symptoms suggest injury, chest pain, fainting, severe shortness of breath, or a serious illness relapse, state uncertainty and recommend medical evaluation rather than trying to coach through it.
 
 ## Workflow
@@ -72,13 +74,19 @@ for path in [
                 print({
                     "start_date": row.get("start_date"),
                     "end_date": row.get("end_date"),
-                    "target_hours": row.get("target_hours"),
+                    "phase": row.get("phase"),
+                    "primary_focus": row.get("primary_focus"),
+                    "target_hours": row.get("hours_target") or row.get("target_hours"),
+                    "source_tss_target": row.get("tss_target"),
+                    "planned_load": row.get("planned_load"),
                     "gross_hours": row.get("actual_hours"),
                     "meaningful_ride_hours": row.get("meaningful_ride_hours"),
                     "excluded_short_ride_hours": row.get("excluded_short_ride_hours"),
                     "status_meaningful": row.get("status_meaningful"),
                     "kilojoules": totals.get("kilojoules"),
                     "estimated_tss": totals.get("estimated_tss"),
+                    "missing_cycling_load": totals.get("estimated_tss_missing_activity_count"),
+                    "partial_power_rides": totals.get("estimated_tss_relevant_partial_activity_count"),
                     "activity_count": totals.get("activity_count"),
                     "events": row.get("events"),
                 })
@@ -90,6 +98,12 @@ PY
 ```
 
 If the question is about one specific ride or race, use its normalized activity row and existing derived summaries. If the decision depends on sample-level detail that is not already summarized, ask the rider for the specific metric needed rather than opening raw location or health payloads.
+
+For a plan-load decision, also inspect `tss-budget-status` and only the relevant
+weeks in private `plan/tss_budgets.json`. Include the active budget, its source and
+status, rationale, conditions, any source conflict or changed-plan warning, and
+recorded-load completeness in the compact advisor bundle. Missing budget data is
+a planning question, not permission to calculate one from hours.
 
 ### 2. Spawn exactly three advisor subagents
 

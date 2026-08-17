@@ -10655,6 +10655,13 @@ HTML_TEMPLATE = """<!doctype html>
       };
     }
 
+    function weekDayLoadWarning(day) {
+      return dayLoadOptions(day).qualifier.split(" · ")
+        .map((part) => part.trim())
+        .filter((part) => part && part !== "Calculated" && part !== "Source")
+        .join(" · ");
+    }
+
     function durationLabelFromHours(hoursValue) {
       const totalMinutes = Math.round(Number(hoursValue || 0) * 60);
       if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return "0min";
@@ -10803,24 +10810,24 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function renderWeekRideFooter(day) {
-      const metrics = day.metrics || {};
       const cue = weekDayCue(day);
       const plan = day.planned_load || {};
       const loadOptions = dayLoadOptions(day);
+      const loadWarning = weekDayLoadWarning(day);
       return `
-        <div class="week-day-footer" aria-label="Scheduled and recorded day stats">
-          <div class="week-plan-summary" title="${escapeHtml(plan.note || "")}">
-            <span class="week-stats-caption">Scheduled</span>
-            <div class="week-plan-values"><strong>${escapeHtml(plannedDayTssLabel(day))}</strong><strong>${escapeHtml(plannedDayTimeLabel(day))}</strong></div>
-            ${plan.estimated ? `<p class="week-load-note">${escapeHtml(plan.qualifier || "Forecast")}</p>` : ""}
-          </div>
+        <div class="week-day-footer" aria-label="${day.has_synced_ride ? "Recorded" : "Scheduled"} day stats">
           ${day.has_synced_ride ? `
             <span class="week-stats-caption">Recorded</span>
             <div class="week-stat-chip-grid">
               ${compactStat(dayTssLabel(day), "TSS", "", { description: loadOptions.description })}
               ${compactStat(dayTimeLabel(day), "time")}
             </div>
-            ${loadOptions.qualifier ? `<p class="week-load-note" title="${escapeHtml(loadOptions.description)}">${escapeHtml(loadOptions.qualifier)}</p>` : ""}` : ""}
+            ${loadWarning ? `<p class="week-load-note" title="${escapeHtml(loadOptions.description)}">${escapeHtml(loadWarning)}</p>` : ""}` : `
+            <div class="week-plan-summary" title="${escapeHtml(plan.note || "")}">
+              <span class="week-stats-caption">Scheduled</span>
+              <div class="week-plan-values"><strong>${escapeHtml(plannedDayTssLabel(day))}</strong><strong>${escapeHtml(plannedDayTimeLabel(day))}</strong></div>
+              ${plan.estimated ? `<p class="week-load-note">${escapeHtml(plan.qualifier || "Forecast")}</p>` : ""}
+            </div>`}
           ${cue ? `<p class="ride-cue">${escapeHtml(cue)}</p>` : ""}
         </div>`;
     }

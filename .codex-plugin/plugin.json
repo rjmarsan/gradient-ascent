@@ -1,6 +1,6 @@
 {
   "name": "gradient-ascent",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Local-first cycling coaching, local activity and recovery imports, optional Ride with GPS sync through its official ride CLI, and dashboards for Codex.",
   "author": {
     "name": "Gradient Ascent Contributors"

@@ -42,6 +42,7 @@ CONNECTION_TEST_RE = re.compile(r"^/api/connections/([a-z_]+)/test/?$")
 STRAVA_ARCHIVE_UPLOAD_PATH = "/api/connections/strava/archive"
 ACTIVITY_RECORDING_UPLOAD_PATH = "/api/activity-recordings"
 RIDE_SETUP_PATH = "/api/connections/ridewithgps/setup"
+PLAN_EXPORT_PATH = "/api/plan/export"
 MAX_BODY_BYTES = 1_000_000
 MAX_STRAVA_ARCHIVE_BYTES = 20 * 1024 * 1024 * 1024
 MAX_ACTIVITY_RECORDING_BYTES = 512 * 1024 * 1024
@@ -464,6 +465,33 @@ def make_training_center_handler(data_dir: Path) -> type[SimpleHTTPRequestHandle
                 self._send_json({"error": write_error}, status=HTTPStatus.FORBIDDEN)
                 return
             parsed = urlparse(self.path)
+            if parsed.path == PLAN_EXPORT_PATH:
+                from .plan_export import build_plan_export
+
+                try:
+                    body = self._read_json_body()
+                    if set(body) - {"format", "start", "end", "workout_id"}:
+                        raise ValueError("Only the export format, date range, and workout ID are accepted.")
+                    if any(not isinstance(value, str) for value in body.values()):
+                        raise ValueError("Plan export options must be text values.")
+                    artifact = build_plan_export(
+                        data_dir, expected_identity=workspace_generation, **body
+                    )
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                except (OSError, RuntimeError):
+                    self._send_json({"error": "The plan could not be exported; check the workspace and retry."}, status=HTTPStatus.CONFLICT)
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("content-type", artifact.content_type)
+                self.send_header("content-disposition", f'attachment; filename="{artifact.filename}"')
+                self.send_header("content-length", str(len(artifact.body)))
+                self.send_header("x-gradient-ascent-plan-entries", str(artifact.summary["entries"]))
+                self.send_header("x-gradient-ascent-fit-files", str(artifact.summary["fit_files"]))
+                self.end_headers()
+                self.wfile.write(artifact.body)
+                return
             if parsed.path == RIDE_SETUP_PATH:
                 from .ride_connection import RideConnectionError
 

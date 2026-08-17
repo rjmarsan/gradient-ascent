@@ -42,6 +42,7 @@ WORKSPACE_GITIGNORE = "\n".join(
         ".env",
         ".runtime/",
         "connections/ridewithgps.json",
+        "exports/",
         "logs/",
         "*.log",
         ".codex/cache/",
@@ -283,6 +284,16 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional output dir (defaults to config data_dir/plan)",
     )
+
+    export_plan_parser = subparsers.add_parser(
+        "export-plan", help="Export a private planned calendar or explicit device workouts"
+    )
+    export_plan_parser.add_argument("--format", choices=("zip", "ics", "csv", "fit"), default="zip")
+    export_plan_parser.add_argument("--start", help="First included date, YYYY-MM-DD")
+    export_plan_parser.add_argument("--end", help="Last included date, YYYY-MM-DD")
+    export_plan_parser.add_argument("--workout", dest="workout_id", help="One explicit workout ID (required for FIT)")
+    export_plan_parser.add_argument("--out", help="Destination file (defaults to private exports/planned)")
+    export_plan_parser.add_argument("--overwrite", action="store_true", help="Allow replacing an existing different export")
 
     insights_parser = subparsers.add_parser(
         "build-insights", help="Merge supported local sources into summaries"
@@ -656,6 +667,7 @@ def _init_data_dir_unlocked(data_dir: Path) -> dict[str, object]:
         _starter_template_text("plan/goal_measurement.py"),
     )
     _write_json_if_missing(data_dir / "plan" / "weeks.json", [])
+    _write_json_if_missing(data_dir / "plan" / "workouts.json", {"version": 1, "workouts": []})
     _write_json_if_missing(data_dir / "plan" / "phases.json", [])
     _write_json_if_missing(data_dir / "plan" / "legend.json", {"markers": {}, "notes": None})
     _write_json_if_missing(data_dir / "plan" / "daily_notes.json", {"version": 1, "notes": {}})
@@ -679,6 +691,7 @@ def _init_data_dir_unlocked(data_dir: Path) -> dict[str, object]:
     ensure_text_line(data_dir / ".gitignore", "integrations/")
     ensure_text_line(data_dir / ".gitignore", ".runtime/")
     ensure_text_line(data_dir / ".gitignore", "connections/ridewithgps.json")
+    ensure_text_line(data_dir / ".gitignore", "exports/")
     return {"data_dir": str(data_dir), "mode": "empty"}
 
 
@@ -716,6 +729,24 @@ def main() -> None:
         return
 
     ensure_private_data_dir(config.data_dir, action=f"run {args.command}")
+
+    if args.command == "export-plan":
+        from .plan_export import write_plan_export
+
+        try:
+            result = write_plan_export(
+                config.data_dir,
+                format=args.format,
+                start=args.start,
+                end=args.end,
+                workout_id=args.workout_id,
+                output_path=Path(args.out).expanduser() if args.out else None,
+                overwrite=args.overwrite,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
+        print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        return
 
     if args.command == "ride":
         from .configured_refresh import aggregate_refresh_result, refresh_configured_workspace

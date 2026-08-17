@@ -7255,6 +7255,24 @@ HTML_TEMPLATE = """<!doctype html>
         border-top: 2px solid transparent;
       }
     }
+    .plan-export-dialog {
+      width: min(560px, calc(100vw - 32px));
+      border: 1px solid var(--line-strong);
+      border-radius: 18px;
+      padding: 24px;
+      color: var(--text);
+      background: #202820;
+      box-shadow: var(--shadow);
+    }
+    .plan-export-dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+    .plan-export-dialog h2 { margin: 0 0 10px; }
+    .plan-export-dialog p { color: var(--muted); }
+    .plan-export-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0; }
+    .plan-export-fields label { display: grid; gap: 7px; font-size: 0.88rem; }
+    .plan-export-fields input, .plan-export-fields select { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); color: var(--text); }
+    .plan-export-format { grid-column: 1 / -1; }
+    .plan-export-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+    .plan-export-status { min-height: 1.5em; overflow-wrap: anywhere; }
   </style>
 </head>
 <body class="primary-shell" data-view="weeks">
@@ -7298,6 +7316,7 @@ HTML_TEMPLATE = """<!doctype html>
           <div id="more-actions-menu" class="action-menu" role="menu" hidden>
             <button id="import-ride-file" type="button" role="menuitem">Import ride file…</button>
             <button id="export-all-xlsx" type="button" role="menuitem">Download</button>
+            <button id="export-planned-schedule" type="button" role="menuitem">Export planned schedule…</button>
             <button id="open-connections" type="button" role="menuitem">Connections</button>
             <button id="open-settings" type="button" role="menuitem">Settings</button>
           </div>
@@ -7465,6 +7484,28 @@ HTML_TEMPLATE = """<!doctype html>
     </section>
   </main>
 
+  <dialog id="plan-export-dialog" class="plan-export-dialog" aria-labelledby="plan-export-title">
+    <form id="plan-export-form">
+      <h2 id="plan-export-title">Export planned schedule</h2>
+      <p>Download a calendar, spreadsheet, or an offline bundle with compatible Garmin/Wahoo FIT workout files. Only explicitly defined intervals become device workouts; plan descriptions stay calendar-only.</p>
+      <div class="plan-export-fields">
+        <label>From<input id="plan-export-start" type="date" /></label>
+        <label>Through<input id="plan-export-end" type="date" /></label>
+        <label class="plan-export-format">Download format<select id="plan-export-format">
+          <option value="zip">Complete bundle (.zip)</option>
+          <option value="ics">Calendar (.ics)</option>
+          <option value="csv">Plan spreadsheet (.csv)</option>
+        </select></label>
+      </div>
+      <p id="plan-export-status" class="plan-export-status" role="status" aria-live="polite">Nothing is uploaded or sent to a device automatically.</p>
+      <div class="plan-export-actions">
+        <button id="plan-export-all-dates" type="button">All dates</button>
+        <button id="plan-export-close" type="button">Close</button>
+        <button id="plan-export-download" class="primary" type="submit">Download plan</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="__TRAINING_CENTER_DATA_SRC__"></script>
   <script>
     const DATA = window.__COACH_TRAINING_CENTER_DATA__ || { weeks: [], days: [], notes: {}, coachNotes: {} };
@@ -7488,6 +7529,7 @@ HTML_TEMPLATE = """<!doctype html>
     const SYNC_API = "./api/sync";
     const CONNECTIONS_API = "./api/connections";
     const RIDE_SETUP_API = "./api/connections/ridewithgps/setup";
+    const PLAN_EXPORT_API = "./api/plan/export";
     const STRAVA_ARCHIVE_API = "./api/connections/strava/archive";
     const ACTIVITY_RECORDINGS_API = "./api/activity-recordings";
     const STRAVA_EXPORT_URL = "https://www.strava.com/athlete/download_my_account";
@@ -10508,6 +10550,73 @@ HTML_TEMPLATE = """<!doctype html>
       document.getElementById("export-all-xlsx").addEventListener("click", () => {
         exportWorkbook(allDayRows(), "training-center-day-rows.xlsx", "training-center-day-rows.csv");
         closeActionMenu();
+      });
+      const dialog = document.getElementById("plan-export-dialog");
+      const start = document.getElementById("plan-export-start");
+      const end = document.getElementById("plan-export-end");
+      const status = document.getElementById("plan-export-status");
+      const download = document.getElementById("plan-export-download");
+      document.getElementById("export-planned-schedule").addEventListener("click", () => {
+        const through = new Date(`${TODAY}T12:00:00Z`);
+        through.setUTCDate(through.getUTCDate() + 41);
+        start.value = TODAY;
+        end.value = through.toISOString().slice(0, 10);
+        status.textContent = "Nothing is uploaded or sent to a device automatically.";
+        closeActionMenu();
+        dialog.showModal();
+      });
+      document.getElementById("plan-export-close").addEventListener("click", () => dialog.close());
+      document.getElementById("plan-export-all-dates").addEventListener("click", () => {
+        start.value = "";
+        end.value = "";
+      });
+      document.getElementById("plan-export-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const format = document.getElementById("plan-export-format").value;
+        const options = { format };
+        if (start.value) options.start = start.value;
+        if (end.value) options.end = end.value;
+        if (start.value && end.value && start.value > end.value) {
+          status.textContent = "Choose an end date on or after the start date.";
+          return;
+        }
+        download.disabled = true;
+        status.textContent = "Preparing your private plan download…";
+        try {
+          if (!state.writeToken) await loadConnections();
+          if (!state.writeToken) throw new Error("Open the local Training Center server to export a plan.");
+          const response = await fetch(PLAN_EXPORT_API, {
+            method: "POST",
+            headers: apiHeaders({ "content-type": "application/json", "accept": "application/octet-stream" }),
+            body: JSON.stringify(options),
+            cache: "no-store"
+          });
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.error || `Plan export failed (HTTP ${response.status}).`);
+          }
+          const disposition = response.headers.get("content-disposition") || "";
+          const matched = disposition.match(/filename="([A-Za-z0-9._-]+)"/);
+          const filename = matched?.[1] || `gradient-ascent-plan.${format}`;
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = filename;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(url);
+          const entries = Number(response.headers.get("x-gradient-ascent-plan-entries") || 0);
+          const fitFiles = Number(response.headers.get("x-gradient-ascent-fit-files") || 0);
+          const message = `Downloaded ${entries} planned ${entries === 1 ? "entry" : "entries"}${format === "zip" ? ` and ${fitFiles} device workout${fitFiles === 1 ? "" : "s"}` : ""}.`;
+          status.textContent = message;
+          setStatus(message);
+        } catch (error) {
+          status.textContent = error.message || "The plan could not be exported.";
+        } finally {
+          download.disabled = false;
+        }
       });
     }
 

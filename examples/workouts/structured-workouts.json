@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "workouts": [
+    {
+      "id": "example-tempo",
+      "date": "2026-09-01",
+      "name": "Example tempo intervals",
+      "description": "Synthetic file-format example, not a personalized training prescription. Review the date and targets before using it.",
+      "device_description": "Three steady intervals with easy recoveries.",
+      "sport": "cycling",
+      "steps": [
+        {
+          "name": "Warm up",
+          "duration_s": 600,
+          "intensity": "warmup",
+          "target": {
+            "type": "power",
+            "unit": "percent_ftp",
+            "low": 55,
+            "high": 65
+          }
+        },
+        {
+          "repeat": 3,
+          "steps": [
+            {
+              "name": "Steady interval",
+              "duration_s": 300,
+              "intensity": "active",
+              "target": {
+                "type": "power",
+                "unit": "percent_ftp",
+                "low": 90,
+                "high": 95
+              }
+            },
+            {
+              "name": "Easy recovery",
+              "duration_s": 180,
+              "intensity": "recovery",
+              "target": {
+                "type": "power",
+                "unit": "percent_ftp",
+                "low": 50,
+                "high": 60
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cool down",
+          "duration_s": 600,
+          "intensity": "cooldown",
+          "target": {
+            "type": "open"
+          }
+        }
+      ]
+    }
+  ]
+}

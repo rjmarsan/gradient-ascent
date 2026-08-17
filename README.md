@@ -192,6 +192,18 @@ Companions are optional and installed separately. They own any authentication an
 
 The plan builder accepts the shipped weekly matrix format and daily rows with at least `Date` and `Workout` columns. See [the weekly example](examples/calendar/sample-training-calendar.csv) and [the daily example](examples/calendar/sample-daily-plan.csv). An unrecognized file fails without replacing the current plan. The prompt flow can also record that the rider has no existing plan and continue without one.
 
+### Export a planned schedule
+
+Choose **More > Export planned schedule** in the Training Center, or run
+`.codex/bin/gradient-ascent export-plan --format zip`. The private download includes
+a readable plan, ICS calendar, CSV schedule, races/events with their original status,
+and FIT Workout files for explicitly authored cycling intervals. Weekly prose and
+events stay calendar-only; skipped events remain cancelled rather than commitments.
+Gradient Ascent does not invent device targets or upload the plan automatically. See the
+[workout export guide](docs/workout-export.md) and
+[synthetic structured-workout example](examples/workouts/structured-workouts.json)
+for the schema, limits, and Garmin/Wahoo transfer instructions.
+
 ## Refresh behavior
 
 The Training Center refresh button, or `gradient-ascent refresh`, first syncs Ride

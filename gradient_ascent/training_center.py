@@ -6518,12 +6518,53 @@ HTML_TEMPLATE = """<!doctype html>
       background: rgba(174, 99, 63, .22);
     }
 
+    .season-track-actions {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 5px 12px;
+    }
+
+    .season-today-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 0;
+      border-radius: 3px;
+      padding: 3px 5px;
+      background: transparent;
+      color: #365b49;
+      font: inherit;
+      letter-spacing: inherit;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .season-today-button i {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .season-today-button:hover { background: rgba(23, 63, 49, .07); }
+    .season-today-button:focus-visible { outline: 2px solid #173f31; outline-offset: 2px; }
+    .season-today-button:disabled { opacity: .5; cursor: default; }
+
     .season-track {
       position: relative;
-      height: 42px;
-      border: 1px solid rgba(23, 63, 49, 0.16);
-      background: #edf0e9;
+      height: 30px;
       cursor: pointer;
+    }
+
+    .season-track::before {
+      content: "";
+      position: absolute;
+      inset: 7px 0;
+      border: 1px solid rgba(23, 63, 49, .14);
+      border-radius: 2px;
+      background: #edf0e9;
+      pointer-events: none;
     }
 
     .season-track:focus-visible {
@@ -6533,32 +6574,19 @@ HTML_TEMPLATE = """<!doctype html>
 
     .season-phase {
       position: absolute;
-      inset-block: 0;
-      display: flex;
-      align-items: center;
+      inset-block: 8px;
       min-width: 0;
       overflow: hidden;
-      border-right: 1px solid rgba(255, 255, 255, .5);
-      padding: 0 6px;
     }
 
-    .season-phase span {
-      overflow: hidden;
-      color: #263f31;
-      font-size: .57rem;
-      line-height: 1.2;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .season-phase.base { background: #d3dece; }
-    .season-phase.build { background: #9cad93; }
-    .season-phase.race { background: #b8c5a9; }
-    .season-phase.recover { background: #e2ddcf; }
+    .season-phase.base { background: #d9e2d7; }
+    .season-phase.build { background: #b5c5ad; }
+    .season-phase.race { background: #9eb299; }
+    .season-phase.recover { background: #e4e2d7; }
 
     .season-selected-range {
       position: absolute;
-      inset-block: -1px;
+      inset-block: 4px;
       z-index: 2;
       min-width: 2px;
       border: 2px solid #ae633f;
@@ -6568,12 +6596,32 @@ HTML_TEMPLATE = """<!doctype html>
 
     .season-day-marker {
       position: absolute;
-      inset-block: -4px;
+      inset-block: 3px;
       z-index: 3;
-      width: 2px;
+      width: 1px;
       transform: translateX(-50%);
       background: #173f31;
       pointer-events: none;
+    }
+
+    .season-today-marker {
+      position: absolute;
+      inset-block: 0;
+      z-index: 4;
+      width: 0;
+      border-left: 1px dashed #365b49;
+      pointer-events: none;
+    }
+
+    .season-today-marker::before {
+      content: "";
+      position: absolute;
+      top: -1px;
+      left: -3px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #365b49;
     }
 
     .season-months {
@@ -7597,7 +7645,7 @@ HTML_TEMPLATE = """<!doctype html>
     const ACTIVITY_RECORDINGS_API = "./api/activity-recordings";
     const STRAVA_EXPORT_URL = "https://www.strava.com/athlete/download_my_account";
     const ATHLETE_TIME_ZONE = DATA.athlete?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    const TODAY = isoDateInTimeZone(new Date(), ATHLETE_TIME_ZONE);
+    let TODAY = isoDateInTimeZone(new Date(), ATHLETE_TIME_ZONE);
     const MONTH_FORMAT = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
     const LONG_DATE_FORMAT = new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
     const SHORT_DATE_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
@@ -7683,6 +7731,20 @@ HTML_TEMPLATE = """<!doctype html>
         // Invalid legacy profile timezones fall back to the browser's local date.
       }
       return localIsoDate(value);
+    }
+
+    function refreshCurrentDate() {
+      const today = isoDateInTimeZone(new Date(), ATHLETE_TIME_ZONE);
+      if (today === TODAY) return false;
+      TODAY = today;
+      renderTodayTabLabel();
+      renderCalendar();
+      renderWeek();
+      renderCoachRail();
+      renderTodayDashboard();
+      renderMonthRail();
+      renderRideSidebar();
+      return true;
     }
 
     function escapeHtml(value) {
@@ -8746,16 +8808,21 @@ HTML_TEMPLATE = """<!doctype html>
       return `codex://new?${query.toString()}`;
     }
 
-    function renderTabs() {
+    function renderTodayTabLabel() {
       const todayTab = document.querySelector(".today-tab");
       const todayLabel = todayAnchorLabel();
       if (todayTab) {
         todayTab.querySelector("span").textContent = todayLabel;
         todayTab.title = `Open ${todayLabel.toLowerCase()} day`;
       }
+    }
+
+    function renderTabs() {
+      renderTodayTabLabel();
       document.querySelectorAll(".tab[data-view]").forEach((button) => {
         button.addEventListener("click", () => {
           if (button.dataset.view === "today") {
+            refreshCurrentDate();
             const target = todayAnchorDate();
             if (target !== state.selectedDate) {
               selectDate(target, { switchWeek: true, openRide: true });
@@ -9748,6 +9815,10 @@ HTML_TEMPLATE = """<!doctype html>
       const rawMarker = dateTime(selectedDate);
       const marker = Number.isFinite(rawMarker) && weekStart <= rawMarker && rawMarker < weekEnd
         ? rawMarker : weekStart;
+      const markerDate = new Date(marker).toISOString().slice(0, 10);
+      const rawToday = dateTime(today);
+      const todayMarker = Number.isFinite(rawToday) && spanStart <= rawToday && rawToday < spanEnd
+        ? { left: percent(rawToday), date: today } : null;
       const months = [];
       const cursor = new Date(spanStart);
       cursor.setUTCDate(1);
@@ -9767,7 +9838,9 @@ HTML_TEMPLATE = """<!doctype html>
           ...range(start, end)
         })),
         selection: range(weekStart, weekEnd),
-        marker: { left: percent(marker), label: selectedDate === today ? "Today" : "Selected day" },
+        marker: spanStart <= marker && marker < spanEnd
+          ? { left: percent(marker), date: markerDate, label: markerDate === today ? "Today" : "Selected day" } : null,
+        today_marker: todayMarker,
         months
       };
     }
@@ -9781,6 +9854,12 @@ HTML_TEMPLATE = """<!doctype html>
         .slice(0, 7);
       const arcLabel = `${currentWeek.phase || layout.phases[0].name || "Season"} → ${layout.phases.at(-1).name || "Plan"}`;
       const shownWeek = `${dayLabel(currentWeek.start_date)}–${dayLabel(currentWeek.end_date)}`;
+      const selectedDescription = `${shownWeek} · ${currentWeek.phase || "Training block"}`;
+      const todayAnchor = todayAnchorDate();
+      const canJumpToday = Boolean(dayByDate(todayAnchor));
+      const todayDescription = todayAnchor === TODAY
+        ? `Jump to today · ${dayLabel(TODAY)}`
+        : `Today is ${dayLabel(TODAY)}; jump to the ${todayAnchor < TODAY ? "latest" : "next"} available day · ${dayLabel(todayAnchor)}`;
       const horizonWeeks = DATA.weeks.filter((week) => week.end_date >= layout.start_date && week.start_date <= layout.end_date);
       const selectedIndex = Math.max(0, horizonWeeks.findIndex((week) => week.start_date === currentWeek.start_date));
       return `
@@ -9800,18 +9879,20 @@ HTML_TEMPLATE = """<!doctype html>
           </div>
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <span>Training phases · select a week</span>
-              <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
+              <span>Season overview · select a week</span>
+              <div class="season-track-actions">
+                <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
+                <button type="button" class="season-today-button" data-season-today aria-label="${escapeHtml(todayDescription)}" title="${escapeHtml(todayDescription)}"${canJumpToday ? "" : " disabled"}><i aria-hidden="true"></i>Today</button>
+              </div>
             </div>
-            <div class="season-track" data-season-track role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${Math.max(0, horizonWeeks.length - 1)}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(shownWeek)}">
+            <div class="season-track" data-season-track role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${Math.max(0, horizonWeeks.length - 1)}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}">
               ${layout.phases.map((phase) => {
                 const label = `${phase.name} · ${dayLabel(phase.start_date)}–${dayLabel(phase.end_date)}`;
-                return `<div class="season-phase ${phaseTone(phase.name)}" data-season-phase title="${escapeHtml(label)}" style="left:${phase.left}%; width:${phase.width}%">
-                  <span>${escapeHtml(phase.name || "Block")}</span>
-                </div>`;
+                return `<div class="season-phase ${phaseTone(phase.name)}" data-season-phase aria-hidden="true" title="${escapeHtml(label)}" style="left:${phase.left}%; width:${phase.width}%"></div>`;
               }).join("")}
-              <div class="season-selected-range" aria-hidden="true" style="left:${layout.selection.left}%; width:${layout.selection.width}%"></div>
-              <div class="season-day-marker" aria-hidden="true" title="${escapeHtml(layout.marker.label)}" style="left:${layout.marker.left}%"></div>
+              ${layout.selection.width > 0 ? `<div class="season-selected-range" aria-hidden="true" style="left:${layout.selection.left}%; width:${layout.selection.width}%"></div>` : ""}
+              ${layout.marker && layout.marker.date !== layout.today_marker?.date ? `<div class="season-day-marker" aria-hidden="true" title="${escapeHtml(layout.marker.label)}" style="left:${layout.marker.left}%"></div>` : ""}
+              ${layout.today_marker ? `<div class="season-today-marker" aria-hidden="true" title="Today · ${escapeHtml(dayLabel(layout.today_marker.date))}" style="left:${layout.today_marker.left}%"></div>` : ""}
             </div>
             <div class="season-months">
               ${layout.months.map((month) => `<span style="left:${month.left}%; width:${month.width}%">${escapeHtml(utcDate(month.date).toLocaleString(undefined, { month: "short", timeZone: "UTC" }))}</span>`).join("")}
@@ -9999,6 +10080,13 @@ HTML_TEMPLATE = """<!doctype html>
     function bindSeasonHorizon() {
       const horizon = document.querySelector("[data-season-jump='current']");
       if (!horizon) return;
+      horizon.querySelector("[data-season-today]")?.addEventListener("click", () => {
+        refreshCurrentDate();
+        const anchor = todayAnchorDate();
+        if (!dayByDate(anchor)) return;
+        selectDate(anchor, { switchWeek: true });
+        document.querySelector("[data-season-today]")?.focus({ preventScroll: true });
+      });
       horizon.querySelectorAll("[data-season-date]").forEach((button) => {
         button.addEventListener("click", () => {
           selectDate(button.dataset.seasonDate, { switchWeek: true, openRide: true });
@@ -10787,11 +10875,20 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
+    function bindCurrentDateLifecycle() {
+      window.addEventListener("focus", refreshCurrentDate);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") refreshCurrentDate();
+      });
+      window.setInterval(refreshCurrentDate, 60000);
+    }
+
     function bindGlobalControls() {
       const coachButton = document.getElementById("ask-coach-button");
       if (coachButton) coachButton.href = codexThreadUrl(COACH_CONVERSATION_PROMPT);
       document.getElementById("previous-day").addEventListener("click", () => moveDay(-1));
       document.getElementById("jump-to-today").addEventListener("click", () => {
+        refreshCurrentDate();
         const anchor = todayAnchorDate();
         if (dayByDate(anchor)) selectDate(anchor, { switchWeek: true, openRide: true });
       });
@@ -10856,6 +10953,7 @@ HTML_TEMPLATE = """<!doctype html>
       bindActivityRecordingImport();
       bindSettingsControls();
       bindGlobalControls();
+      bindCurrentDateLifecycle();
       setView(state.view);
       syncScrollState();
       showFlashStatus();

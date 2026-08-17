@@ -1,4 +1,6 @@
 import json
+from datetime import date, timedelta
+import re
 import shutil
 import subprocess
 import tempfile
@@ -150,6 +152,128 @@ class TrainingCenterPolishTest(unittest.TestCase):
         self.assertAlmostEqual(first["selection"]["width"], 100 * 7 / 59)
         self.assertAlmostEqual(last["selection"]["width"], 100 * 6 / 59)
         self.assertAlmostEqual(sum(month["width"] for month in first["months"]), 100)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed for the horizon rendering test")
+    def test_dense_horizon_has_quiet_phase_marks_and_a_today_control(self) -> None:
+        phases = []
+        for index in range(43):
+            start = date(2026, 1, 5) + timedelta(days=7 * index)
+            phases.append(
+                {
+                    "name": f"A complete and deliberately long build phase {index + 1}",
+                    "start_date": start.isoformat(),
+                    "end_date": (start + timedelta(days=6)).isoformat(),
+                }
+            )
+        template = training_center.HTML_TEMPLATE
+        source = template[
+            template.index("    function phaseTone(") : template.index(
+                "\n    function renderWeekSelect("
+            )
+        ]
+        script = (
+            f"const DATA = {json.dumps({'phases': phases, 'weeks': phases, 'days': [{'date': '2026-08-17', 'events': []}]})};\n"
+            "const state = {selectedDate: '2026-08-16'};\n"
+            "const TODAY = '2026-08-17';\n"
+            "const dayLabel = value => value;\n"
+            "const utcDate = value => new Date(value + 'T00:00:00Z');\n"
+            "const escapeHtml = value => String(value);\n"
+            "const eventIsSkipped = () => false;\n"
+            "const todayAnchorDate = () => TODAY;\n"
+            "const dayByDate = value => DATA.days.find(day => day.date === value);\n"
+            + source
+            + "\nconsole.log(JSON.stringify(renderSeasonHorizon({start_date:'2026-08-10',end_date:'2026-08-16',phase:'Current build phase'})));"
+        )
+        rendered = json.loads(
+            subprocess.run(
+                [shutil.which("node"), "-e", script],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            ).stdout
+        )
+        segments = re.findall(
+            r'<div class="season-phase [^"]*"[^>]*>(.*?)</div>', rendered, re.DOTALL
+        )
+        self.assertEqual(len(segments), 43)
+        self.assertTrue(all(not text.strip() for text in segments))
+        self.assertIn(phases[0]["name"], rendered)
+        self.assertIn("data-season-today", rendered)
+        self.assertIn('class="season-today-marker"', rendered)
+        self.assertIn('aria-valuetext="2026-08-10–2026-08-16 · Current build phase"', rendered)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed for the horizon date test")
+    def test_today_marker_is_independent_and_never_clamped_into_the_horizon(self) -> None:
+        template = training_center.HTML_TEMPLATE
+        source = template[
+            template.index("    function seasonHorizonLayout(") : template.index(
+                "\n    function renderSeasonHorizon("
+            )
+        ]
+        phases = [{"name": "Build", "start_date": "2026-08-01", "end_date": "2026-08-31"}]
+        script = source + (
+            f"\nconst phases = {json.dumps(phases)};"
+            "\nconst week = {start_date:'2026-08-10',end_date:'2026-08-16'};"
+            "\nconst next = {start_date:'2026-08-17',end_date:'2026-08-23'};"
+            "\nconsole.log(JSON.stringify(["
+            "seasonHorizonLayout(phases,week,'2026-08-16','2026-08-17'),"
+            "seasonHorizonLayout(phases,next,'2026-08-20','2026-08-17'),"
+            "seasonHorizonLayout(phases,week,'2026-08-16','2026-07-31'),"
+            "seasonHorizonLayout(phases,week,'2026-08-16','2026-09-01'),"
+            "seasonHorizonLayout(phases,week,'2026-08-16','2026-02-30')"
+            "]));"
+        )
+        first, moved, before, after, invalid = json.loads(
+            subprocess.run(
+                [shutil.which("node"), "-e", script],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            ).stdout
+        )
+        self.assertEqual(first["today_marker"], moved["today_marker"])
+        self.assertEqual(first["today_marker"]["date"], "2026-08-17")
+        self.assertAlmostEqual(first["today_marker"]["left"], 100 * 16 / 31)
+        self.assertNotEqual(first["selection"], moved["selection"])
+        self.assertEqual(first["marker"]["date"], "2026-08-16")
+        for outside in (before, after, invalid):
+            self.assertIsNone(outside["today_marker"])
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed for the horizon date test")
+    def test_out_of_season_selection_does_not_create_a_false_edge_marker(self) -> None:
+        template = training_center.HTML_TEMPLATE
+        source = template[
+            template.index("    function seasonHorizonLayout(") : template.index(
+                "\n    function renderSeasonHorizon("
+            )
+        ]
+        script = source + (
+            "\nconst phases=[{name:'Build',start_date:'2026-08-01',end_date:'2026-08-31'}];"
+            "\nconsole.log(JSON.stringify(["
+            "seasonHorizonLayout(phases,{start_date:'2026-07-20',end_date:'2026-07-26'},'2026-07-25','2026-08-17'),"
+            "seasonHorizonLayout(phases,{start_date:'2026-09-07',end_date:'2026-09-13'},'2026-09-09','2026-08-17'),"
+            "seasonHorizonLayout(phases,{start_date:'2026-07-27',end_date:'2026-08-02'},'2026-07-31','2026-08-17'),"
+            "seasonHorizonLayout(phases,{start_date:'2026-07-27',end_date:'2026-08-02'},'2026-08-01','2026-08-17')"
+            "]));"
+        )
+        before, after, partial, boundary = json.loads(
+            subprocess.run(
+                [shutil.which("node"), "-e", script],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            ).stdout
+        )
+        for outside in (before, after):
+            self.assertEqual(outside["selection"]["width"], 0)
+            self.assertIsNone(outside["marker"])
+        self.assertAlmostEqual(partial["selection"]["width"], 100 * 2 / 31)
+        self.assertIsNone(partial["marker"])
+        self.assertEqual(boundary["marker"]["date"], "2026-08-01")
+        self.assertEqual(boundary["marker"]["left"], 0)
 
     def test_day_brief_can_wrap_without_a_fixed_duration_column(self) -> None:
         html = training_center.HTML_TEMPLATE

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .storage import read_json, write_json
+from .power_metrics import _valid_estimate, enrich_recording_power
 from .canonical import (
     canonical_activity_records,
     canonical_recovery_records,
@@ -27,6 +29,7 @@ def _is_cycling_activity(sport_type: Any) -> bool:
     return normalized in {
         "cycling",
         "ebikeride",
+        "emountainbikeride",
         "gravelride",
         "handcycle",
         "hkworkoutactivitytypecycling",
@@ -53,6 +56,8 @@ class AggregateTotals:
     excluded_short_ride_count: int = 0
     estimated_tss: float = 0.0
     estimated_tss_activity_count: int = 0
+    estimated_tss_estimated_activity_count: int = 0
+    estimated_tss_partial_activity_count: int = 0
     avg_hr_sum: float = 0.0
     avg_hr_weight: float = 0.0
     avg_power_sum: float = 0.0
@@ -83,6 +88,13 @@ class AggregateTotals:
         if estimated_tss is not None:
             self.estimated_tss += float(estimated_tss)
             self.estimated_tss_activity_count += 1
+            if str(activity.get("estimated_tss_source") or "").startswith("estimated_"):
+                self.estimated_tss_estimated_activity_count += 1
+            if (
+                activity.get("estimated_tss_source") == "estimated_power_stream"
+                and (activity.get("power_load_estimate") or {}).get("scope") == "recorded_power"
+            ):
+                self.estimated_tss_partial_activity_count += 1
 
         if _is_cycling_activity(sport):
             if activity.get("is_meaningful_ride"):
@@ -116,6 +128,8 @@ class AggregateTotals:
         self.excluded_short_ride_count += other.excluded_short_ride_count
         self.estimated_tss += other.estimated_tss
         self.estimated_tss_activity_count += other.estimated_tss_activity_count
+        self.estimated_tss_estimated_activity_count += other.estimated_tss_estimated_activity_count
+        self.estimated_tss_partial_activity_count += other.estimated_tss_partial_activity_count
         self.avg_hr_sum += other.avg_hr_sum
         self.avg_hr_weight += other.avg_hr_weight
         self.avg_power_sum += other.avg_power_sum
@@ -124,13 +138,9 @@ class AggregateTotals:
             self.by_sport[sport] = self.by_sport.get(sport, 0) + count
 
     def finalize(self) -> Dict[str, Any]:
-        avg_hr = (
-            self.avg_hr_sum / self.avg_hr_weight if self.avg_hr_weight > 0 else None
-        )
+        avg_hr = self.avg_hr_sum / self.avg_hr_weight if self.avg_hr_weight > 0 else None
         avg_power = (
-            self.avg_power_sum / self.avg_power_weight
-            if self.avg_power_weight > 0
-            else None
+            self.avg_power_sum / self.avg_power_weight if self.avg_power_weight > 0 else None
         )
         return {
             "activity_count": self.activity_count,
@@ -148,6 +158,8 @@ class AggregateTotals:
             if self.estimated_tss_activity_count
             else None,
             "estimated_tss_activity_count": self.estimated_tss_activity_count,
+            "estimated_tss_estimated_activity_count": self.estimated_tss_estimated_activity_count,
+            "estimated_tss_partial_activity_count": self.estimated_tss_partial_activity_count,
             "average_heartrate": round(avg_hr, 1) if avg_hr is not None else None,
             "average_watts": round(avg_power, 1) if avg_power is not None else None,
             "by_sport": dict(sorted(self.by_sport.items())),
@@ -161,13 +173,13 @@ def _parse_local_date(value: str | None) -> Optional[str]:
 
 
 def _safe_float(value: Any) -> Optional[float]:
-    if value is None or value == "":
+    if isinstance(value, bool) or value is None or value == "":
         return None
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    if result != result:
+    if not math.isfinite(result):
         return None
     return result
 
@@ -180,10 +192,15 @@ def _training_load_fields(
     moving_s = _safe_float(moving_time_s)
     np_w = _safe_float(weighted_average_watts)
     ftp = _safe_float(ftp_w)
-    if not moving_s or moving_s <= 0 or not np_w or np_w <= 0 or not ftp or ftp <= 0:
+    if moving_s is None or moving_s <= 0 or np_w is None or np_w < 0 or ftp is None or not 1 <= ftp <= 3000:
         return None, None
-    intensity_factor = np_w / ftp
-    estimated_tss = (moving_s / 3600.0) * (intensity_factor**2) * 100.0
+    try:
+        intensity_factor = np_w / ftp
+        estimated_tss = (moving_s / 3600.0) * (intensity_factor**2) * 100.0
+    except OverflowError:
+        return None, None
+    if not math.isfinite(intensity_factor) or not math.isfinite(estimated_tss):
+        return None, None
     return round(intensity_factor, 3), round(estimated_tss, 1)
 
 
@@ -223,25 +240,86 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
     source_provider = source.get("provider")
     legacy_id = raw.get("id") if source_provider == "strava" and isinstance(raw, dict) else None
     sport_type = activity.get("sport_type") or activity.get("type")
-    moving_time_s = activity.get("moving_time_s") if "moving_time_s" in activity else activity.get("moving_time")
+    moving_time_s = (
+        activity.get("moving_time_s")
+        if "moving_time_s" in activity
+        else activity.get("moving_time")
+    )
     average_watts = _safe_float(activity.get("average_watts"))
     kilojoules = _safe_float(activity.get("kilojoules"))
     moving_seconds = _safe_float(moving_time_s)
-    if kilojoules is None and average_watts and average_watts > 0 and moving_seconds and moving_seconds > 0:
+    if (
+        kilojoules is None
+        and average_watts
+        and average_watts > 0
+        and moving_seconds
+        and moving_seconds > 0
+    ):
         kilojoules = round(average_watts * moving_seconds / 1000.0, 1)
-    intensity_factor, estimated_tss = _training_load_fields(
-        moving_time_s,
-        activity.get("weighted_average_watts"),
-        ftp_w,
+    source_np = _safe_float(activity.get("weighted_average_watts"))
+    source_np = source_np if source_np is not None and source_np >= 0 else None
+    power_estimate = activity.get("power_load_estimate")
+    uses_stream_estimate = source_np is None and _valid_estimate(power_estimate)
+    weighted_watts = (
+        power_estimate["estimated_normalized_power_w"] if uses_stream_estimate else source_np
+    )
+    load_duration = moving_time_s
+    estimate_details = None
+    if uses_stream_estimate:
+        observed = float(power_estimate["observed_duration_s"])
+        load_duration = (
+            min(moving_seconds, observed) if moving_seconds and moving_seconds > 0 else None
+        )
+        coverage = (
+            min(1.0, observed / moving_seconds) if moving_seconds and moving_seconds > 0 else None
+        )
+        estimate_details = {
+            **power_estimate,
+            "load_duration_s": load_duration,
+            "coverage_ratio": round(coverage, 6) if coverage is not None else None,
+            "scope": "full_duration"
+            if moving_seconds and observed >= moving_seconds - 1
+            else "recorded_power",
+        }
+    intensity_factor, estimated_tss = _training_load_fields(load_duration, weighted_watts, ftp_w)
+    source_tss = _safe_float(activity.get("estimated_tss"))
+    source_tss = source_tss if source_tss is not None and source_tss >= 0 else None
+    source_if = _safe_float(activity.get("intensity_factor"))
+    source_if = source_if if source_if is not None and source_if >= 0 else None
+    effective_tss = source_tss if source_tss is not None else estimated_tss
+    tss_source = (
+        "source"
+        if source_tss is not None
+        else "estimated_power_stream"
+        if uses_stream_estimate and estimated_tss is not None
+        else "estimated_source_np"
+        if estimated_tss is not None
+        else None
     )
     is_meaningful_ride, exclusion_reason = _meaningful_ride_fields(
         sport_type,
         moving_time_s,
         kilojoules,
-        activity.get("estimated_tss") if activity.get("estimated_tss") is not None else estimated_tss,
+        effective_tss,
         raw.get("suffer_score") if isinstance(raw, dict) else None,
     )
 
+    source_details = {}
+    source_activity_id = raw.get("source_activity_id") if isinstance(raw, dict) else None
+    if (
+        source_provider == "recording"
+        and raw.get("source_provider") == "ridewithgps"
+        and isinstance(source_activity_id, str)
+        and re.fullmatch(r"[1-9][0-9]{0,31}", source_activity_id)
+    ):
+        provider_name = raw.get("source_provider_name")
+        source_details = {
+            "source_provider": "ridewithgps",
+            "source_activity_id": source_activity_id,
+            "name_is_authored": isinstance(provider_name, str)
+            and bool(provider_name.strip())
+            and provider_name != activity.get("name"),
+        }
     return {
         "id": legacy_id if legacy_id is not None else activity.get("id"),
         "provider_id": activity.get("provider_id"),
@@ -252,16 +330,30 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
         "start_date_local": activity.get("start_date_local"),
         "date": activity.get("date") or _parse_local_date(activity.get("start_date_local")),
         "moving_time_s": moving_time_s,
-        "elapsed_time_s": activity.get("elapsed_time_s") if "elapsed_time_s" in activity else activity.get("elapsed_time"),
-        "distance_m": activity.get("distance_m") if "distance_m" in activity else activity.get("distance"),
-        "elevation_gain_m": activity.get("elevation_gain_m") if "elevation_gain_m" in activity else activity.get("total_elevation_gain"),
+        "elapsed_time_s": activity.get("elapsed_time_s")
+        if "elapsed_time_s" in activity
+        else activity.get("elapsed_time"),
+        "distance_m": activity.get("distance_m")
+        if "distance_m" in activity
+        else activity.get("distance"),
+        "elevation_gain_m": activity.get("elevation_gain_m")
+        if "elevation_gain_m" in activity
+        else activity.get("total_elevation_gain"),
         "average_speed_mps": raw.get("average_speed") if isinstance(raw, dict) else None,
         "average_heartrate": activity.get("average_heartrate"),
         "max_heartrate": activity.get("max_heartrate"),
         "average_watts": activity.get("average_watts"),
-        "weighted_average_watts": activity.get("weighted_average_watts"),
-        "intensity_factor": activity.get("intensity_factor") if activity.get("intensity_factor") is not None else intensity_factor,
-        "estimated_tss": activity.get("estimated_tss") if activity.get("estimated_tss") is not None else estimated_tss,
+        "weighted_average_watts": weighted_watts,
+        "weighted_average_watts_source": "source"
+        if source_np is not None
+        else "estimated_power_stream"
+        if uses_stream_estimate
+        else None,
+        "estimated_normalized_power_w": weighted_watts if uses_stream_estimate else None,
+        "power_load_estimate": estimate_details,
+        "intensity_factor": source_if if source_if is not None else intensity_factor,
+        "estimated_tss": effective_tss,
+        "estimated_tss_source": tss_source,
         "is_meaningful_ride": is_meaningful_ride,
         "meaningful_exclusion_reason": exclusion_reason,
         "kilojoules": kilojoules,
@@ -271,6 +363,7 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
         "private": raw.get("private") if isinstance(raw, dict) else None,
         "device_name": raw.get("device_name") if isinstance(raw, dict) else None,
         "source": source or None,
+        **source_details,
     }
 
 
@@ -560,6 +653,7 @@ def build_insights(data_dir: Path, calendar_path: Optional[Path], output_dir: Pa
     athlete = read_json(data_dir / "plan" / "athlete.json", default={}) or {}
     ftp_w = _safe_float(athlete.get("ftp_w"))
     resolved_activity_records, _ = resolve_activity_records(canonical_activity_records(data_dir))
+    resolved_activity_records = enrich_recording_power(data_dir, resolved_activity_records, output_dir)
     activities = [
         _normalize_activity(activity, ftp_w)
         for activity in resolved_activity_records

@@ -212,6 +212,12 @@ export paths, then rebuilds canonical records, coaching summaries, and the dashb
 once. Use `gradient-ascent refresh --local-only` to rebuild without provider requests.
 Opening the dashboard or checking `ride status` does not initiate a sync.
 
+Source-reported training load takes priority. When suitable recorded power and FTP
+are available, refresh can calculate clearly labeled NP/TSS estimates; incomplete
+coverage stays partial, and unsupported load stays missing. Generated ride titles
+can use a planned-workout name for display without claiming the workout was followed.
+See [training load and ride labels](docs/training-load.md) for the calculation and limits.
+
 Strava history advances when the rider uploads or imports a newer official archive.
 Garmin recovery remains a local-export import. Connecting Ride with GPS does not
 authorize live Strava or Garmin access. Optional companion data appears after

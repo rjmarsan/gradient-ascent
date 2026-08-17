@@ -155,6 +155,8 @@ def _recording_activities(data_dir: Path) -> list[dict[str, Any]]:
             average_watts=item.get("average_watts"),
             weighted_average_watts=item.get("weighted_average_watts"),
             kilojoules=item.get("kilojoules"),
+            estimated_tss=item.get("estimated_tss"),
+            intensity_factor=item.get("intensity_factor"),
             raw=item,
         )
         for item in activities

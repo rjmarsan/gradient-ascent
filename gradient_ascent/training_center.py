@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat as stat_module
@@ -12,6 +13,7 @@ from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
+from .activity_titles import is_placeholder_title, select_activity_title
 from .coach_notes import coach_notes_by_date
 from .dashboard_labels import day_labels_by_date, ride_annotations_by_id
 from .progress import build_progress_artifact
@@ -20,7 +22,7 @@ from .workspace_lock import cross_process_locking_available, workspace_lock
 
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-ACTIVITY_DETAILS_CACHE_VERSION = 2
+ACTIVITY_DETAILS_CACHE_VERSION = 3
 MAX_ACTIVITY_DETAIL_SIDECAR_BYTES = 64 * 1024 * 1024
 _training_center_build_lock = workspace_lock
 WEEKDAY_NAMES = {
@@ -4438,6 +4440,17 @@ HTML_TEMPLATE = """<!doctype html>
       letter-spacing: 0.11em;
     }
 
+    .load-qualifier {
+      display: block;
+      margin-top: 3px;
+      color: #925235;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: .52rem;
+      font-weight: 500;
+      letter-spacing: 0;
+      line-height: 1.3;
+    }
+
     .day-spark {
       height: 46px;
       margin: 0;
@@ -5732,7 +5745,9 @@ HTML_TEMPLATE = """<!doctype html>
 
     body.primary-shell .coach-rail {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       align-content: start;
+      min-width: 0;
       overflow: visible;
       color: rgba(255, 255, 255, 0.9);
       background: var(--coach-spine);
@@ -5745,6 +5760,44 @@ HTML_TEMPLATE = """<!doctype html>
 
     body.primary-shell .coach-rail-content {
       align-content: start;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    body.primary-shell .coach-rail .rail-section,
+    body.primary-shell .coach-rail .section-title-row {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    body.primary-shell .coach-rail .section-title-row {
+      flex-wrap: wrap;
+      gap: 6px 10px;
+    }
+
+    body.primary-shell .coach-rail .session-card {
+      grid-template-columns: 20px minmax(0, 1fr);
+      grid-template-areas: "icon copy" ". duration";
+      gap: 6px 8px;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    body.primary-shell .coach-rail .session-icon {
+      grid-area: icon;
+    }
+
+    body.primary-shell .coach-rail .session-copy {
+      grid-area: copy;
+      min-width: 0;
+    }
+
+    body.primary-shell .coach-rail .session-duration {
+      grid-area: duration;
+      justify-self: start;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
 
     body.primary-shell .coach-rail .eyebrow,
@@ -5802,6 +5855,11 @@ HTML_TEMPLATE = """<!doctype html>
     body.primary-shell .coach-rail .phase-chip {
       border-color: rgba(255, 255, 255, 0.12);
       background: rgba(255, 255, 255, 0.05);
+      min-width: 0;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
     }
 
     body.primary-shell .rail-detail {
@@ -6433,78 +6491,107 @@ HTML_TEMPLATE = """<!doctype html>
       gap: 7px;
     }
 
+    .season-track-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 5px 14px;
+      margin-top: 8px;
+      color: #6e7569;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: .48rem;
+      letter-spacing: .06em;
+    }
+
+    .season-selection-key {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #925235;
+    }
+
+    .season-selection-key i {
+      width: 9px;
+      height: 9px;
+      border: 1px solid #ae633f;
+      background: rgba(174, 99, 63, .22);
+    }
+
     .season-track {
       position: relative;
-      height: 68px;
-      border-bottom: 1px solid rgba(23, 63, 49, 0.16);
+      height: 42px;
+      border: 1px solid rgba(23, 63, 49, 0.16);
+      background: #edf0e9;
       cursor: pointer;
     }
 
-    .season-profile {
-      position: absolute;
-      inset: 0 0 7px;
-      width: 100%;
-      height: 54px;
-    }
-
-    .profile-base {
-      fill: rgba(104, 128, 94, .64);
-    }
-
-    .profile-peak {
-      fill: rgba(166, 88, 58, .82);
+    .season-track:focus-visible {
+      outline: 2px solid #173f31;
+      outline-offset: 3px;
     }
 
     .season-phase {
       position: absolute;
-      bottom: 0;
-      height: 1px;
+      inset-block: 0;
+      display: flex;
+      align-items: center;
+      min-width: 0;
       overflow: hidden;
-      border-radius: 0;
-      opacity: 0;
+      border-right: 1px solid rgba(255, 255, 255, .5);
+      padding: 0 6px;
     }
 
     .season-phase span {
-      display: none;
+      overflow: hidden;
+      color: #263f31;
+      font-size: .57rem;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
-    .season-phase.base { background: #cbd6c3; }
-    .season-phase.build { background: #6f8a68; }
-    .season-phase.race { background: #a55f46; }
-    .season-phase.recover { background: #d7cfb8; }
+    .season-phase.base { background: #d3dece; }
+    .season-phase.build { background: #9cad93; }
+    .season-phase.race { background: #b8c5a9; }
+    .season-phase.recover { background: #e2ddcf; }
 
-    .season-now {
+    .season-selected-range {
       position: absolute;
-      bottom: -6px;
+      inset-block: -1px;
+      z-index: 2;
+      min-width: 2px;
+      border: 2px solid #ae633f;
+      background: rgba(174, 99, 63, .2);
+      pointer-events: none;
+    }
+
+    .season-day-marker {
+      position: absolute;
+      inset-block: -4px;
+      z-index: 3;
+      width: 2px;
       transform: translateX(-50%);
-      display: grid;
-      justify-items: center;
-      gap: 3px;
-    }
-
-    .season-now i {
-      width: 1px;
-      height: 64px;
       background: #173f31;
-    }
-
-    .season-now span {
-      color: #173f31;
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      font-size: 0.42rem;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
+      pointer-events: none;
     }
 
     .season-months {
-      display: grid;
-      grid-template-columns: repeat(var(--season-month-count, 6), 1fr);
+      position: relative;
+      height: 12px;
       color: #817c6f;
       font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       font-size: 0.43rem;
       letter-spacing: 0.1em;
       text-transform: uppercase;
+    }
+
+    .season-months span {
+      position: absolute;
+      top: 0;
+      overflow: hidden;
+      padding-left: 2px;
+      white-space: nowrap;
     }
 
     body[data-view="weeks"] .week-desk {
@@ -6517,30 +6604,6 @@ HTML_TEMPLATE = """<!doctype html>
       gap: 0;
       border-bottom: 1px solid var(--rule);
       background: var(--coach-paper);
-    }
-
-    .week-event-notice {
-      margin: 0 18px 18px;
-      padding: 12px 14px;
-      display: flex;
-      gap: 8px 14px;
-      align-items: baseline;
-      flex-wrap: wrap;
-      border: 1px solid rgba(212, 191, 136, 0.28);
-      border-radius: 14px;
-      background: rgba(212, 191, 136, 0.08);
-    }
-
-    .week-event-notice span {
-      color: var(--gold);
-      font-size: 0.72rem;
-      font-weight: 750;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .week-event-notice small {
-      color: var(--muted);
     }
 
     .week-thesis,
@@ -7909,7 +7972,7 @@ HTML_TEMPLATE = """<!doctype html>
       const metrics = day.metrics || {};
       const parts = [];
       if (Number(metrics.meaningful_ride_hours || 0) > 0) parts.push(`${formatNumber(metrics.meaningful_ride_hours, 1)}h`);
-      if (Number(metrics.estimated_tss || 0) > 0) parts.push(`${formatNumber(metrics.estimated_tss, 0)} TSS`);
+      if (metrics.estimated_tss != null) parts.push(`${dayTssLabel(day)}${metrics.tss_partial ? " (partial)" : ""}`);
       if (Number(metrics.kilojoules || 0) > 0) parts.push(`${formatNumber(metrics.kilojoules, 0)} kJ`);
       return parts.length ? `<span class="day-kpi">${escapeHtml(parts.slice(0, 2).join(" / "))}</span>` : "";
     }
@@ -7918,6 +7981,10 @@ HTML_TEMPLATE = """<!doctype html>
       const stats = {
         meaningfulHours: 0,
         estimatedTss: 0,
+        tssDays: 0,
+        tssEstimated: false,
+        tssPartial: false,
+        tssMissing: false,
         kilojoules: 0,
         raceDays: 0,
         intervalDays: 0,
@@ -7931,6 +7998,10 @@ HTML_TEMPLATE = """<!doctype html>
         const signals = calendarDaySignals(day);
         stats.meaningfulHours += Number(metrics.meaningful_ride_hours || 0);
         stats.estimatedTss += Number(metrics.estimated_tss || 0);
+        if (metrics.estimated_tss != null) stats.tssDays += 1;
+        else if (Number(metrics.activity_count || 0) > 0) stats.tssMissing = true;
+        stats.tssEstimated ||= Boolean(metrics.tss_estimated);
+        stats.tssPartial ||= Boolean(metrics.tss_partial);
         stats.kilojoules += Number(metrics.kilojoules || 0);
         if (signals.race) stats.raceDays += 1;
         if (signals.interval) stats.intervalDays += 1;
@@ -8781,7 +8852,7 @@ HTML_TEMPLATE = """<!doctype html>
       const week = anchorDay ? weekForDate(anchorDay.date) : null;
       if (!week) return '<div class="calendar-week-stat" aria-hidden="true"></div>';
       const energyLabel = week.estimated_tss_label && week.estimated_tss_label !== "-- TSS"
-        ? week.estimated_tss_label
+        ? `${week.estimated_tss_label}${week.tss_partial ? " (partial)" : ""}`
         : (week.kilojoules_label || "0 kJ");
       const weekDays = DATA.days.filter((day) => week.start_date <= day.date && day.date <= week.end_date);
       const stats = monthStats(weekDays);
@@ -8821,6 +8892,9 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function renderMonthSummary(stats) {
+      const load = stats.tssDays
+        ? `${stats.tssEstimated ? "~" : ""}${formatNumber(stats.estimatedTss, 0)} TSS${stats.tssPartial || stats.tssMissing ? " (partial)" : ""}`
+        : "-- TSS";
       return `
         <aside class="month-summary-card" aria-label="Month training summary">
           <p class="eyebrow">Month read</p>
@@ -8834,7 +8908,7 @@ HTML_TEMPLATE = """<!doctype html>
             <div class="month-summary-stat"><strong>${stats.raceDays}</strong><span>race</span></div>
           </div>
           <div class="month-summary-line">
-            <strong>${formatNumber(stats.estimatedTss, 0)} TSS / ${formatNumber(stats.kilojoules, 0)} kJ</strong>
+            <strong>${escapeHtml(load)} / ${formatNumber(stats.kilojoules, 0)} kJ</strong>
             <span>${stats.rideDays} ride days / ${stats.noteDays} daily notes / ${stats.coachNoteDays} coach notes</span>
           </div>
         </aside>`;
@@ -9035,7 +9109,12 @@ HTML_TEMPLATE = """<!doctype html>
         : (score >= 80 ? "High" : score >= 65 ? "Steady" : score >= 50 ? "Watch" : "Low");
       const plannedTss = Number(day.planned_load?.estimated_tss || 0);
       const plannedTssLabel = plannedTss > 0 ? `${formatNumber(plannedTss, 0)} est` : "--";
-      const actualTssLabel = numericLabel(metrics.estimated_tss, "", 0) || "--";
+      const actualTssLabel = dayTssLabel(day, false);
+      const sessionSubtitle = day.has_synced_ride
+        ? (day.actual_title_from_plan || day.actual === day.planned
+          ? `${primary?.source_label || "Local"} recording · workout name from plan`
+          : truncate(day.actual || "", 88))
+        : truncate(week.primary_focus || day.week_focus || "", 88);
       const expanded = Boolean(content.querySelector(".rail-detail[open]"));
       label.textContent = longDayLabel(day.date);
       if (contextLabel) {
@@ -9056,16 +9135,16 @@ HTML_TEMPLATE = """<!doctype html>
           </div>
           <article class="session-card">
             <span class="session-icon" aria-hidden="true">~</span>
-            <div>
+            <div class="session-copy">
               <strong>${escapeHtml(day.planned || "No planned session")}</strong>
-              <p>${escapeHtml(day.has_synced_ride ? truncate(day.actual || "", 88) : truncate(week.primary_focus || day.week_focus || "", 88))}</p>
+              ${sessionSubtitle ? `<p>${escapeHtml(sessionSubtitle)}</p>` : ""}
             </div>
-            <span>${escapeHtml(dayTimeLabel(day))}</span>
+            <span class="session-duration">${escapeHtml(dayTimeLabel(day))}</span>
           </article>
           ${renderRailSpark(day)}
           <div class="rail-mini-grid">
             <div><strong>${escapeHtml(plannedTssLabel)}</strong><span>plan TSS</span></div>
-            <div><strong>${escapeHtml(actualTssLabel)}</strong><span>actual TSS</span></div>
+            <div title="${escapeHtml(metrics.tss_description || "")}"><strong>${escapeHtml(actualTssLabel)}</strong><span>actual TSS${metrics.tss_partial ? " · partial" : ""}</span></div>
             <div><strong>${escapeHtml(recoveryStatus)}</strong><span>recovery</span></div>
             <div><strong>${hasDailyNote(day) ? "yes" : "--"}</strong><span>note</span></div>
           </div>
@@ -9527,8 +9606,8 @@ HTML_TEMPLATE = """<!doctype html>
             ${hasActualRide
               ? `
                 ${summaryCard(dayTimeLabel(day), "Ride time")}
-                ${summaryCard(numericLabel(day.metrics?.estimated_tss, " TSS", 0) || "-- TSS", "Training load")}
-                ${summaryCard(primary?.np_label || "-- NP", "Primary ride NP")}`
+                ${summaryCard(dayTssLabel(day), "Training load", dayLoadOptions(day))}
+                ${summaryCard(primary?.np_label || "-- NP", "Primary ride NP", { description: primary?.np_description })}`
               : `
                 ${summaryCard(plannedTssLabelForDay(day), "Planned load")}
                 ${summaryCard(plannedIntentLabel(day), "Intended feel")}
@@ -9640,44 +9719,75 @@ HTML_TEMPLATE = """<!doctype html>
       return "base";
     }
 
-    function seasonMonthLabels(spanStart, spanEnd) {
-      const labels = [];
+    function seasonHorizonLayout(phases, currentWeek, selectedDate, today) {
+      const dayMs = 86400000;
+      const dateTime = (value) => {
+        const text = String(value || "");
+        if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(text)) return NaN;
+        const valueMs = Date.parse(`${text}T00:00:00Z`);
+        return Number.isFinite(valueMs) && new Date(valueMs).toISOString().slice(0, 10) === text
+          ? valueMs : NaN;
+      };
+      const rows = (Array.isArray(phases) ? phases : [])
+        .map((phase) => ({ phase, start: dateTime(phase?.start_date), end: dateTime(phase?.end_date) + dayMs }))
+        .filter(({ start, end }) => Number.isFinite(start) && Number.isFinite(end) && end > start)
+        .sort((left, right) => left.start - right.start);
+      if (!rows.length) return null;
+      const spanStart = rows[0].start;
+      const spanEnd = Math.max(...rows.map((row) => row.end));
+      const span = spanEnd - spanStart;
+      const percent = (time) => Math.max(0, Math.min(100, ((time - spanStart) / span) * 100));
+      const range = (start, end) => {
+        const left = percent(start);
+        return { left, width: Math.max(0, percent(end) - left) };
+      };
+      const rawWeekStart = dateTime(currentWeek?.start_date);
+      const rawWeekEnd = dateTime(currentWeek?.end_date) + dayMs;
+      const weekStart = Number.isFinite(rawWeekStart) ? rawWeekStart : spanStart;
+      const weekEnd = Number.isFinite(rawWeekEnd) && rawWeekEnd > weekStart ? rawWeekEnd : weekStart + dayMs;
+      const rawMarker = dateTime(selectedDate);
+      const marker = Number.isFinite(rawMarker) && weekStart <= rawMarker && rawMarker < weekEnd
+        ? rawMarker : weekStart;
+      const months = [];
       const cursor = new Date(spanStart);
       cursor.setUTCDate(1);
-      while (cursor.getTime() <= spanEnd && labels.length < 14) {
-        labels.push(cursor.toLocaleString(undefined, { month: "short", timeZone: "UTC" }));
+      while (cursor.getTime() < spanEnd && months.length < 120) {
+        const monthStart = cursor.getTime();
+        const date = cursor.toISOString().slice(0, 10);
         cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+        months.push({ date, ...range(monthStart, cursor.getTime()) });
       }
-      return labels;
+      return {
+        start_date: new Date(spanStart).toISOString().slice(0, 10),
+        end_date: new Date(spanEnd - dayMs).toISOString().slice(0, 10),
+        phases: rows.map(({ phase, start, end }) => ({
+          name: String(phase.name || "Training block"),
+          start_date: phase.start_date,
+          end_date: phase.end_date,
+          ...range(start, end)
+        })),
+        selection: range(weekStart, weekEnd),
+        marker: { left: percent(marker), label: selectedDate === today ? "Today" : "Selected day" },
+        months
+      };
     }
 
     function renderSeasonHorizon(currentWeek) {
-      const phases = Array.isArray(DATA.phases) ? DATA.phases : [];
+      const layout = seasonHorizonLayout(DATA.phases, currentWeek, state.selectedDate, TODAY);
+      if (!layout) return "";
       const events = DATA.days
         .flatMap((day) => (day.events || []).filter((event) => !eventIsSkipped(event)).map((event) => ({ day, event })))
         .filter(({ day }) => day.date >= currentWeek.start_date)
         .slice(0, 7);
-      const phaseRows = phases
-        .filter((phase) => phase?.start_date && phase?.end_date)
-        .sort((left, right) => left.start_date.localeCompare(right.start_date));
-      const visiblePhases = phaseRows;
-      if (!visiblePhases.length) return "";
-      const spanStart = new Date(`${visiblePhases[0].start_date}T00:00:00Z`).getTime();
-      const spanEnd = new Date(`${visiblePhases.at(-1).end_date}T00:00:00Z`).getTime();
-      const span = Math.max(1, spanEnd - spanStart);
-      const selectedMarkerDate = currentWeek.start_date <= state.selectedDate && state.selectedDate <= currentWeek.end_date
-        ? state.selectedDate
-        : currentWeek.start_date;
-      const markerTime = new Date(`${selectedMarkerDate}T00:00:00Z`).getTime();
-      const currentPct = Math.max(0, Math.min(100, ((markerTime - spanStart) / span) * 100));
-      const markerLabel = selectedMarkerDate === TODAY ? "Now" : "Week";
-      const arcLabel = `${currentWeek.phase || visiblePhases[0].name || "Season"} → ${visiblePhases.at(-1).name || "Plan"}`;
-      const monthLabels = seasonMonthLabels(spanStart, spanEnd);
+      const arcLabel = `${currentWeek.phase || layout.phases[0].name || "Season"} → ${layout.phases.at(-1).name || "Plan"}`;
+      const shownWeek = `${dayLabel(currentWeek.start_date)}–${dayLabel(currentWeek.end_date)}`;
+      const horizonWeeks = DATA.weeks.filter((week) => week.end_date >= layout.start_date && week.start_date <= layout.end_date);
+      const selectedIndex = Math.max(0, horizonWeeks.findIndex((week) => week.start_date === currentWeek.start_date));
       return `
-        <section class="season-horizon" aria-label="Season horizon" data-season-jump="current" data-season-start="${escapeHtml(visiblePhases[0].start_date)}" data-season-end="${escapeHtml(visiblePhases.at(-1).end_date)}">
+        <section class="season-horizon" aria-label="Season horizon" data-season-jump="current" data-season-start="${escapeHtml(layout.start_date)}" data-season-end="${escapeHtml(layout.end_date)}">
           <div class="season-horizon-head">
             <div>
-              <p class="eyebrow">Season arc</p>
+              <p class="eyebrow">Season plan</p>
               <strong>${escapeHtml(arcLabel)}</strong>
             </div>
             <div class="season-horizon-races">
@@ -9689,24 +9799,22 @@ HTML_TEMPLATE = """<!doctype html>
             </div>
           </div>
           <div class="season-track-wrap">
-            <div class="season-track" data-season-track aria-label="Select week from season horizon">
-              <svg class="season-profile" viewBox="0 0 1000 92" preserveAspectRatio="none" aria-hidden="true">
-                <path class="profile-base" d="M0 80 L22 73 L40 76 L58 66 L78 70 L96 58 L120 61 L142 55 L166 63 L188 51 L210 56 L232 45 L256 48 L278 37 L302 41 L326 31 L352 38 L378 26 L404 34 L430 22 L456 32 L480 42 L502 46 L526 39 L548 44 L570 30 L596 24 L620 35 L646 42 L672 32 L696 38 L722 28 L748 24 L772 36 L796 43 L820 32 L846 40 L870 49 L894 43 L918 52 L942 45 L966 57 L1000 63 L1000 92 L0 92 Z"></path>
-                <path class="profile-peak" d="M404 34 L430 22 L456 32 L480 42 L502 46 L502 92 L404 92 Z"></path>
-              </svg>
-              ${visiblePhases.map((phase) => {
-                const start = new Date(`${phase.start_date}T00:00:00Z`).getTime();
-                const end = new Date(`${phase.end_date}T00:00:00Z`).getTime();
-                const left = Math.max(0, ((start - spanStart) / span) * 100);
-                const width = Math.max(3, ((end - start) / span) * 100);
-                return `<div class="season-phase ${phaseTone(phase.name)}" style="left:${left}%; width:${width}%">
+            <div class="season-track-meta">
+              <span>Training phases · select a week</span>
+              <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
+            </div>
+            <div class="season-track" data-season-track role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${Math.max(0, horizonWeeks.length - 1)}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(shownWeek)}">
+              ${layout.phases.map((phase) => {
+                const label = `${phase.name} · ${dayLabel(phase.start_date)}–${dayLabel(phase.end_date)}`;
+                return `<div class="season-phase ${phaseTone(phase.name)}" data-season-phase title="${escapeHtml(label)}" style="left:${phase.left}%; width:${phase.width}%">
                   <span>${escapeHtml(phase.name || "Block")}</span>
                 </div>`;
               }).join("")}
-              <div class="season-now" style="left:${currentPct}%"><i></i><span>${escapeHtml(markerLabel)}</span></div>
+              <div class="season-selected-range" aria-hidden="true" style="left:${layout.selection.left}%; width:${layout.selection.width}%"></div>
+              <div class="season-day-marker" aria-hidden="true" title="${escapeHtml(layout.marker.label)}" style="left:${layout.marker.left}%"></div>
             </div>
-            <div class="season-months" style="--season-month-count:${monthLabels.length}">
-              ${monthLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
+            <div class="season-months">
+              ${layout.months.map((month) => `<span style="left:${month.left}%; width:${month.width}%">${escapeHtml(utcDate(month.date).toLocaleString(undefined, { month: "short", timeZone: "UTC" }))}</span>`).join("")}
             </div>
           </div>
         </section>`;
@@ -9766,20 +9874,6 @@ HTML_TEMPLATE = """<!doctype html>
         .sort((left, right) => left.date.localeCompare(right.date))[0] || null;
     }
 
-    function renderNextEventNotice(week) {
-      const event = nextUpcomingEvent();
-      if (!event || (week?.events || []).some((item) => item.id === event.id)) return "";
-      const detail = [dayLabel(event.date), event.priority ? `${event.priority} priority` : "", event.discipline || ""]
-        .filter(Boolean)
-        .join(" · ");
-      return `
-        <aside class="week-event-notice" aria-label="Next target event">
-          <span>Next event</span>
-          <strong>${escapeHtml(event.name || "Unnamed event")}</strong>
-          <small>${escapeHtml(detail)}</small>
-        </aside>`;
-    }
-
     function renderWeek() {
       const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || DATA.weeks[0];
       if (!week) {
@@ -9827,7 +9921,6 @@ HTML_TEMPLATE = """<!doctype html>
       document.getElementById("week-list").innerHTML = `
         <article class="week-card">
           ${renderSeasonHorizon(week)}
-          ${renderNextEventNotice(week)}
           <div class="week-intel">
             <div class="week-thesis">
               <div class="week-desk-kicker">Week thesis</div>
@@ -9850,9 +9943,10 @@ HTML_TEMPLATE = """<!doctype html>
               </summary>
               <div class="week-status-details" aria-label="Week status details">
                 <div class="week-status-metrics">
-                  <div class="week-status-metric">
+                  <div class="week-status-metric" title="${escapeHtml(week.tss_description || "")}">
                     <span>Actual TSS</span>
                     <strong>${escapeHtml(week.estimated_tss_label || "-- TSS")}</strong>
+                    ${week.tss_partial ? '<small class="load-qualifier">partial total</small>' : ""}
                   </div>
                   <div class="week-status-metric">
                     <span>Planned TSS</span>
@@ -9912,16 +10006,28 @@ HTML_TEMPLATE = """<!doctype html>
       });
       const track = horizon.querySelector("[data-season-track]");
       if (!track) return;
+      const horizonWeeks = DATA.weeks.filter((week) =>
+        week.end_date >= horizon.dataset.seasonStart && week.start_date <= horizon.dataset.seasonEnd
+      );
+      const weeks = horizonWeeks.length ? horizonWeeks : DATA.weeks;
+      const showWeek = (week, target = week?.start_date, restoreFocus = false) => {
+        if (!week) return;
+        state.selectedWeekStart = week.start_date;
+        state.selectedDate = dayByDate(target) ? target : week.start_date;
+        renderWeek();
+        renderCoachRail();
+        renderTodayDashboard();
+        renderMonthRail();
+        renderRideSidebar();
+        if (restoreFocus) document.querySelector("[data-season-track]")?.focus({ preventScroll: true });
+      };
       track.addEventListener("click", (event) => {
         const rect = track.getBoundingClientRect();
+        if (rect.width <= 0) return;
         const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-        const horizonWeeks = DATA.weeks.filter((week) =>
-          week.end_date >= horizon.dataset.seasonStart && week.start_date <= horizon.dataset.seasonEnd
-        );
-        const weeks = horizonWeeks.length ? horizonWeeks : DATA.weeks;
         const start = utcDate(horizon.dataset.seasonStart).getTime();
-        const end = utcDate(horizon.dataset.seasonEnd).getTime();
-        const target = new Date(start + Math.max(1, end - start) * ratio).toISOString().slice(0, 10);
+        const end = utcDate(horizon.dataset.seasonEnd).getTime() + 86400000;
+        const target = new Date(Math.min(end - 1, start + Math.max(1, end - start) * ratio)).toISOString().slice(0, 10);
         const week = weeks.find((item) => item.start_date <= target && target <= item.end_date) ||
           weeks.reduce((nearest, item) => {
             const center = (utcDate(item.start_date).getTime() + utcDate(item.end_date).getTime()) / 2;
@@ -9932,14 +10038,17 @@ HTML_TEMPLATE = """<!doctype html>
               ? item
               : nearest;
           }, null);
-        if (!week) return;
-        state.selectedWeekStart = week.start_date;
-        state.selectedDate = dayByDate(target) ? target : week.start_date;
-        renderWeek();
-        renderCoachRail();
-        renderTodayDashboard();
-        renderMonthRail();
-        renderRideSidebar();
+        showWeek(week, target);
+      });
+      track.addEventListener("keydown", (event) => {
+        let index = Math.max(0, weeks.findIndex((week) => week.start_date === state.selectedWeekStart));
+        if (event.key === "ArrowLeft" || event.key === "ArrowDown") index -= 1;
+        else if (event.key === "ArrowRight" || event.key === "ArrowUp") index += 1;
+        else if (event.key === "Home") index = 0;
+        else if (event.key === "End") index = weeks.length - 1;
+        else return;
+        event.preventDefault();
+        showWeek(weeks[Math.max(0, Math.min(weeks.length - 1, index))], undefined, true);
       });
     }
 
@@ -9948,11 +10057,12 @@ HTML_TEMPLATE = """<!doctype html>
       return `<span class="event-chip">${escapeHtml(date)}${escapeHtml(event.name)} ${event.discipline ? `/${escapeHtml(event.discipline)}` : ""}</span>`;
     }
 
-    function summaryCard(value, label) {
+    function summaryCard(value, label, options = {}) {
       return `
-        <div class="summary-card">
+        <div class="summary-card"${options.description ? ` title="${escapeHtml(options.description)}"` : ""}>
           <div class="summary-value">${escapeHtml(value)}</div>
           <div class="stat-label">${escapeHtml(label)}</div>
+          ${options.qualifier ? `<small class="load-qualifier">${escapeHtml(options.qualifier)}</small>` : ""}
         </div>`;
     }
 
@@ -9961,12 +10071,30 @@ HTML_TEMPLATE = """<!doctype html>
       return activities.find((activity) => activity.meaningful) || activities[0] || null;
     }
 
-    function compactStat(value, label, className = "") {
+    function compactStat(value, label, className = "", options = {}) {
       return `
-        <div class="${className || "week-stat-chip"}">
+        <div class="${className || "week-stat-chip"}"${options.description ? ` title="${escapeHtml(options.description)}"` : ""}>
           <strong>${escapeHtml(value || "--")}</strong>
           <span>${escapeHtml(label)}</span>
+          ${options.qualifier ? `<small class="load-qualifier">${escapeHtml(options.qualifier)}</small>` : ""}
         </div>`;
+    }
+
+    function dayTssLabel(day, includeUnit = true) {
+      const metrics = day?.metrics || {};
+      const supplied = includeUnit ? metrics.tss_label : metrics.tss_short_label;
+      if (supplied != null) return supplied;
+      const value = metrics.estimated_tss;
+      if (value == null || !Number.isFinite(Number(value)) || Number(value) < 0) return includeUnit ? "-- TSS" : "--";
+      return `${metrics.tss_estimated ? "~" : ""}${formatNumber(Number(value), 0)}${includeUnit ? " TSS" : ""}`;
+    }
+
+    function dayLoadOptions(day) {
+      const metrics = day?.metrics || {};
+      return {
+        description: metrics.tss_description || "",
+        qualifier: metrics.tss_partial ? "partial total" : ""
+      };
     }
 
     function durationLabelFromHours(hoursValue) {
@@ -10018,7 +10146,7 @@ HTML_TEMPLATE = """<!doctype html>
         distanceLabelFromKm(metrics.distance_km),
         `${formatNumber(Number(metrics.kilojoules || 0), 0)} kJ`
       ];
-      if (metrics.estimated_tss != null) parts.push(`${formatNumber(Number(metrics.estimated_tss), 0)} TSS`);
+      if (metrics.estimated_tss != null) parts.push(`${dayTssLabel(day)}${metrics.tss_partial ? " (partial)" : ""}`);
       if (metrics.average_heartrate != null) parts.push(`HR ${formatNumber(Number(metrics.average_heartrate), 0)}`);
       return parts.join(" | ");
     }
@@ -10062,8 +10190,8 @@ HTML_TEMPLATE = """<!doctype html>
       const primary = primaryActivity(day);
       return [
         [dayTimeLabel(day), "time"],
-        [numericLabel(metrics.estimated_tss, " TSS", 0) || "-- TSS", "TSS"],
-        [primary?.np_label || "-- NP", "NP"],
+        [dayTssLabel(day), "TSS", dayLoadOptions(day)],
+        [primary?.np_label || "-- NP", "NP", { description: primary?.np_description }],
         [dayDistanceLabel(day), distanceUnitLabel()],
         [numericLabel(metrics.kilojoules, " kJ", 0) || "0 kJ", "kJ"],
         [numericLabel(metrics.average_heartrate || primary?.avg_hr, "", 0, "HR ") || "HR --", "avg HR"],
@@ -10130,7 +10258,7 @@ HTML_TEMPLATE = """<!doctype html>
       return `
         <div class="week-day-footer" aria-label="Actual ride stats">
           <div class="week-stat-chip-grid">
-            ${compactStat(numericLabel(metrics.estimated_tss, " TSS", 0) || "-- TSS", "TSS")}
+            ${compactStat(dayTssLabel(day), "TSS", "", dayLoadOptions(day))}
             ${compactStat(dayTimeLabel(day), "time")}
           </div>
           ${cue ? `<p class="ride-cue">${escapeHtml(cue)}</p>` : ""}
@@ -10167,9 +10295,9 @@ HTML_TEMPLATE = """<!doctype html>
           <div class="week-day-title-stack">
             ${day.has_synced_ride
               ? `
-                <p class="actual">${escapeHtml(day.actual || "Synced ride")}</p>
+                <p class="actual"${day.actual_title_from_plan ? ' title="Workout name from the plan; recorded stats are shown below"' : ""}>${escapeHtml(day.actual || "Synced ride")}</p>
                 ${renderWeekStravaLink(day)}
-                <p class="planned">${escapeHtml(day.planned || "No planned session")}</p>`
+                <p class="planned">${escapeHtml(day.actual_title_from_plan ? "Workout name from plan" : day.planned || "No planned session")}</p>`
               : `<p class="actual">${escapeHtml(day.planned || "No planned session")}</p>`}
           </div>
           <div class="week-day-meta">
@@ -10225,8 +10353,8 @@ HTML_TEMPLATE = """<!doctype html>
       if (!cleanItems.length) return "";
       return `
         <div class="stat-list">
-          ${cleanItems.map(([label, value]) => `
-            <div class="stat-row">
+          ${cleanItems.map(([label, value, description]) => `
+            <div class="stat-row"${description ? ` title="${escapeHtml(description)}"` : ""}>
               <span>${escapeHtml(label)}</span>
               <strong>${escapeHtml(value || "--")}</strong>
             </div>`).join("")}
@@ -10245,7 +10373,7 @@ HTML_TEMPLATE = """<!doctype html>
       return `
         <div class="ride-assessment-stats">
           <div class="ride-stat-grid">
-            ${rideChipItems(day).map(([value, label]) => compactStat(value, label, "ride-stat-chip")).join("")}
+            ${rideChipItems(day).map(([value, label, options]) => compactStat(value, label, "ride-stat-chip", options)).join("")}
           </div>
         </div>`;
     }
@@ -10350,15 +10478,16 @@ HTML_TEMPLATE = """<!doctype html>
           ${statList([
             ["time", activity.duration_label],
             [distanceUnitLabel(), activityDistanceLabel(activity)],
-            ["TSS", activity.tss_label],
+            [activity.tss_partial ? "TSS (partial)" : "TSS", activity.tss_label, activity.tss_description],
             ["kilojoules", activity.kilojoules_label],
-            ["NP", activity.np_label],
+            ["NP", activity.np_label, activity.np_description],
             ["avg HR", activity.hr_label],
             ["intensity", activity.if_label],
             ["variability", activity.vi_label],
             ["suffer", activity.suffer_score_label],
             ["elevation", activityElevationLabel(activity)],
           ])}
+          ${activity.tss_partial ? `<p class="sidebar-copy">${escapeHtml(activity.tss_description)}</p>` : ""}
           ${renderLapList(activity)}
           ${notes ? `<p class="sidebar-copy">${escapeHtml(notes)}</p>` : ""}
         </article>`;
@@ -10748,12 +10877,13 @@ def _read(path: Path, default: Any) -> Any:
 
 
 def _safe_float(value: Any) -> float | None:
-    if value is None:
+    if isinstance(value, bool) or value is None:
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return numeric if math.isfinite(numeric) else None
 
 
 def _hours_label(value: Any) -> str:
@@ -11086,7 +11216,8 @@ def _metric_line(metrics: dict[str, Any]) -> str:
         f"{metrics.get('kilojoules') or 0:g} kJ",
     ]
     if metrics.get("estimated_tss") is not None:
-        parts.append(f"{metrics['estimated_tss']:g} TSS")
+        label = metrics.get("tss_label") or f"{metrics['estimated_tss']:g} TSS"
+        parts.append(f"{label}{' (partial)' if metrics.get('tss_partial') else ''}")
     if metrics.get("average_heartrate") is not None:
         parts.append(f"HR {round(metrics['average_heartrate'])}")
     return " | ".join(parts)
@@ -11122,6 +11253,85 @@ def _tss_label(tss: Any) -> str:
     return f"{numeric:,.0f} TSS"
 
 
+def _load_display(
+    value: Any, *, estimated: bool = False, partial: bool = False, description: str = ""
+) -> dict[str, Any]:
+    numeric = _safe_float(value)
+    available = numeric is not None and math.isfinite(numeric) and numeric >= 0
+    short = f"{'~' if estimated else ''}{numeric:,.0f}" if available else None
+    return {
+        "tss_label": f"{short} TSS" if short is not None else None,
+        "tss_short_label": short,
+        "tss_description": description if available else "No supported power-based load is available.",
+        "tss_estimated": bool(available and estimated),
+        "tss_partial": bool(available and partial),
+    }
+
+
+def _activity_load_display(activity: dict[str, Any]) -> dict[str, Any]:
+    source = activity.get("estimated_tss_source")
+    estimate = activity.get("power_load_estimate")
+    estimate = estimate if isinstance(estimate, dict) else {}
+    estimated = source in {"estimated_source_np", "estimated_power_stream"}
+    partial = source == "estimated_power_stream" and estimate.get("scope") == "recorded_power"
+    if partial:
+        coverage = _safe_float(estimate.get("coverage_ratio"))
+        coverage_text = (
+            f"{coverage:.0%} of reported moving time"
+            if coverage is not None and math.isfinite(coverage) and 0 <= coverage <= 1
+            else "the recorded power intervals"
+        )
+        description = (
+            f"Partial estimate from {coverage_text}, using your currently configured FTP. "
+            "Missing power data is not extrapolated."
+        )
+    elif source == "estimated_power_stream":
+        description = "Estimated from recorded power and your currently configured FTP."
+    elif source == "estimated_source_np":
+        description = "Estimated from source normalized power and your currently configured FTP."
+    elif source == "source":
+        description = "Training load reported by the activity source."
+    else:
+        description = "Training load from the imported activity."
+    return _load_display(
+        activity.get("estimated_tss"),
+        estimated=estimated,
+        partial=partial,
+        description=description,
+    )
+
+
+def _totals_load_display(totals: dict[str, Any]) -> dict[str, Any]:
+    estimated = (_safe_int(totals.get("estimated_tss_estimated_activity_count")) or 0) > 0
+    scored = _safe_int(totals.get("estimated_tss_activity_count"))
+    count = _safe_int(totals.get("activity_count"))
+    missing = scored is not None and count is not None and 0 < scored < count
+    partial = (_safe_int(totals.get("estimated_tss_partial_activity_count")) or 0) > 0 or missing
+    if partial:
+        description = (
+            "Partial training-load total: some recorded power or activity load is missing. "
+            "Calculated values use your currently configured FTP; missing load is not extrapolated."
+        )
+    elif estimated:
+        description = "Includes training-load estimates using your currently configured FTP."
+    else:
+        description = "Training load reported by the imported activities."
+    return _load_display(
+        totals.get("estimated_tss"),
+        estimated=estimated,
+        partial=partial,
+        description=description,
+    )
+
+
+def _activity_np_label(activity: dict[str, Any]) -> str | None:
+    watts = _safe_float(activity.get("weighted_average_watts"))
+    if watts is None or not math.isfinite(watts) or watts < 0:
+        return None
+    prefix = "~" if activity.get("weighted_average_watts_source") == "estimated_power_stream" else ""
+    return f"{prefix}{watts:,.0f} NP"
+
+
 def _np_label(watts: Any) -> str:
     numeric = _safe_float(watts)
     if not numeric:
@@ -11136,11 +11346,49 @@ def _hr_label(hr: Any) -> str:
     return f"HR {round(numeric)}"
 
 
-def _activity_label(activity: dict[str, Any]) -> str:
-    if activity.get("private"):
-        return "Private ride"
-    name = str(activity.get("name") or "Ride").strip()
-    return name or "Ride"
+def _activity_title_info(
+    activity: dict[str, Any], *, planned_name: str | None = None
+) -> tuple[str, bool]:
+    raw = activity.get("raw") if isinstance(activity.get("raw"), dict) else {}
+    private = bool(activity.get("private") or raw.get("private"))
+    name = "Private ride" if private else activity.get("name")
+    source_ids = (
+        activity.get("id"),
+        activity.get("provider_id"),
+        activity.get("source_activity_id"),
+        raw.get("id"),
+        raw.get("source_activity_id"),
+    )
+    baseline = raw.get("source_provider_name")
+    authored = not private and (
+        activity.get("name_is_authored") is True
+        or (
+            raw.get("source_provider") == "ridewithgps"
+            and isinstance(baseline, str)
+            and bool(baseline.strip())
+            and str(name or "").strip() != baseline.strip()
+        )
+    )
+    planned = planned_name if planned_name is not None else activity.get("_dashboard_planned_name")
+    title = select_activity_title(
+        name,
+        planned_name=planned,
+        authored_title=name if authored else None,
+        source_ids=source_ids,
+        fallback="Private ride" if private else "Ride",
+    )
+    from_plan = (
+        not authored
+        and isinstance(planned, str)
+        and title == planned.strip()
+        and is_placeholder_title(name, source_ids=source_ids)
+        and not is_placeholder_title(title, source_ids=source_ids)
+    )
+    return title, from_plan
+
+
+def _activity_label(activity: dict[str, Any], *, planned_name: str | None = None) -> str:
+    return _activity_title_info(activity, planned_name=planned_name)[0]
 
 
 def _optional_kj_label(kilojoules: Any) -> str | None:
@@ -11679,10 +11927,12 @@ def _activity_detail(
     source_url = strava_url
     source_label = "Strava" if strava_url else "Local recording" if provider == "recording" else None
     raw = activity.get("raw") if isinstance(activity.get("raw"), dict) else {}
-    ridewithgps_id = str(raw.get("source_activity_id") or "")
-    if provider == "recording" and raw.get("source_provider") == "ridewithgps" and re.fullmatch(r"[1-9][0-9]{0,31}", ridewithgps_id):
+    ridewithgps_id = str(activity.get("source_activity_id") or raw.get("source_activity_id") or "")
+    original_provider = activity.get("source_provider") or raw.get("source_provider")
+    if provider == "recording" and original_provider == "ridewithgps" and re.fullmatch(r"[1-9][0-9]{0,31}", ridewithgps_id):
         source_url = f"https://ridewithgps.com/trips/{ridewithgps_id}"
         source_label = "Ride with GPS"
+    display_name, name_from_plan = _activity_title_info(activity)
     average_watts = _safe_float(activity.get("average_watts"))
     weighted_watts = _safe_float(activity.get("weighted_average_watts"))
     variability_index = (
@@ -11692,7 +11942,8 @@ def _activity_detail(
     )
     detail = {
         "id": activity_id,
-        "name": _activity_label(activity),
+        "name": display_name,
+        "name_from_plan": name_from_plan,
         "sport": activity.get("sport_type") or activity.get("type") or "Activity",
         "start_label": _activity_start_label(activity.get("start_date_local") or activity.get("start_date")),
         "strava_url": strava_url,
@@ -11702,8 +11953,13 @@ def _activity_detail(
         "miles_label": _miles_label(activity.get("distance_m")),
         "distance_label": _distance_label(activity.get("distance_m")),
         "kilojoules_label": _optional_kj_label(activity.get("kilojoules")),
-        "tss_label": _optional_tss_label(activity.get("estimated_tss")),
-        "np_label": _np_label(activity.get("weighted_average_watts")) if _safe_float(activity.get("weighted_average_watts")) else None,
+        **_activity_load_display(activity),
+        "np_label": _activity_np_label(activity),
+        "np_description": (
+            "Estimated normalized power from recorded power samples."
+            if activity.get("weighted_average_watts_source") == "estimated_power_stream"
+            else "Normalized power reported by the activity source."
+        ),
         "hr_label": _hr_label(activity.get("average_heartrate")) if _safe_float(activity.get("average_heartrate")) else None,
         "elevation_label": _elevation_label(activity.get("elevation_gain_m")),
         "suffer_score_label": _suffer_score_label(activity.get("suffer_score")),
@@ -12012,28 +12268,33 @@ def _synced_activity_summary(
             "summary": fallback_metric_line,
             "assessment": assessment,
             "actual": fallback_metric_line,
+            "actual_title_from_plan": False,
             "has_synced_ride": bool(((daily_row or {}).get("totals") or {}).get("activity_count")),
             "hard_activity": False,
         }
 
     totals = (daily_row or {}).get("totals") or {}
+    load_display = _totals_load_display(totals)
+    load_label = load_display["tss_label"] or "-- TSS"
+    if load_display["tss_partial"]:
+        load_label += " (partial)"
     duration = _duration_label(totals.get("moving_time_s"))
     if totals.get("excluded_short_ride_time_s"):
         duration = f"{duration} ({_duration_label(totals.get('meaningful_ride_time_s'))} meaningful)"
 
     if len(rides) == 1:
         anchor_ride = rides[0]
-        title = _activity_label(anchor_ride)
+        title, title_from_plan = _activity_title_info(anchor_ride)
         actual_title = title
     else:
         anchor_ride = max(rides, key=lambda ride: float(ride.get("moving_time_s") or 0.0))
-        actual_title = _activity_label(anchor_ride)
+        actual_title, title_from_plan = _activity_title_info(anchor_ride)
         title = f"{len(rides)} rides"
 
     assessment = (
         f"{duration} | {_distance_label(totals.get('distance_m'))} | "
-        f"{_kj_label(totals.get('kilojoules'))} | {_tss_label(totals.get('estimated_tss'))} | "
-        f"{_np_label(anchor_ride.get('weighted_average_watts'))} | "
+        f"{_kj_label(totals.get('kilojoules'))} | {load_label} | "
+        f"{_activity_np_label(anchor_ride) or '-- NP'} | "
         f"{_hr_label(totals.get('average_heartrate'))}. {title}"
     )
     summary = f"Actual: {assessment}"
@@ -12045,6 +12306,7 @@ def _synced_activity_summary(
         "summary": summary,
         "assessment": assessment,
         "actual": actual_title,
+        "actual_title_from_plan": title_from_plan,
         "has_synced_ride": True,
         "hard_activity": suffer_score >= 60.0,
         "anchor_activity": title,
@@ -12101,6 +12363,7 @@ def _day_metrics(daily_row: dict[str, Any] | None) -> dict[str, Any]:
         "distance_km": round(distance / 1000.0, 1) if distance is not None else None,
         "kilojoules": round(kilojoules, 0) if kilojoules is not None else None,
         "estimated_tss": round(estimated_tss, 1) if estimated_tss is not None else None,
+        **_totals_load_display(totals),
         "average_heartrate": average_heartrate,
         "by_sport": totals.get("by_sport") or {},
     }
@@ -12160,7 +12423,7 @@ def _build_payload(
     for row in activities:
         if not isinstance(row, dict) or row.get("id") is None:
             continue
-        activities_by_id[str(row["id"])] = row
+        activities_by_id[str(row["id"])] = dict(row)
 
     weeks: list[dict[str, Any]] = []
     days: list[dict[str, Any]] = []
@@ -12192,6 +12455,9 @@ def _build_payload(
             day_date = start + timedelta(days=index)
             day_key = day_date.isoformat()
             daily_row = daily_map.get(day_key)
+            for activity_id in _activity_ids(daily_row):
+                if activity_id in activities_by_id:
+                    activities_by_id[activity_id]["_dashboard_planned_name"] = planned
             metrics = _day_metrics(daily_row)
             metric_line = _metric_line(metrics)
             synced_summary = _synced_activity_summary(
@@ -12230,6 +12496,7 @@ def _build_payload(
                 "phase": plan.get("phase") or "",
                 "planned": planned,
                 "actual": synced_summary["actual"],
+                "actual_title_from_plan": synced_summary["actual_title_from_plan"],
                 "source_note": source_note,
                 "events": day_events,
                 "metrics": metrics,
@@ -12253,6 +12520,7 @@ def _build_payload(
         if meaningful_hours is None:
             meaningful_hours = row.get("actual_hours")
         display_status = _week_display_status(row, week_days)
+        week_load = _totals_load_display(totals)
         week_record = {
             "start_date": row["start_date"],
             "end_date": row["end_date"],
@@ -12273,7 +12541,9 @@ def _build_payload(
             "progress_pct": _progress_pct(meaningful_hours, target_max),
             "target_min_pct": _progress_pct(target_min, target_max),
             "kilojoules_label": _kj_label(totals.get("kilojoules")),
-            "estimated_tss_label": _tss_label(totals.get("estimated_tss")),
+            "estimated_tss_label": week_load["tss_label"] or "-- TSS",
+            "tss_description": week_load["tss_description"],
+            "tss_partial": week_load["tss_partial"],
             "distance_km": _round_or_none(
                 (_safe_float(totals.get("distance_m")) or 0.0) / 1000.0,
                 1,

@@ -143,6 +143,113 @@ class RideWithGPSTest(unittest.TestCase):
         for path in (self.workspace / "integrations" / "ridewithgps").rglob("*"):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700 if path.is_dir() else 0o600)
 
+    def test_documented_ebike_taxonomy_imports_without_admitting_other_sports(self):
+        specifications = [
+            (101, 21, 47, "e_biking:mountain", "EMountainBikeRide"),
+            (102, 21, 7, "e_biking:road", "EBikeRide"),
+            (103, 21, 0, "e_biking:generic", "EBikeRide"),
+            (104, 2, 47, "cycling:mountain", "EMountainBikeRide"),
+            (105, None, None, "cycling:gravel", "Ride"),
+            (106, 21, 8, "unknown:generic", "EMountainBikeRide"),
+            (107, None, None, "e_biking:generic", "EBikeRide"),
+        ]
+        included = [
+            {**trip(identifier), "fit_sport": sport, "fit_sub_sport": sub, "activity_type": kind}
+            for identifier, sport, sub, kind, _ in specifications
+        ]
+        excluded = [
+            {**trip(201), "fit_sport": 1, "activity_type": "running:trail"},
+            {**trip(202), "fit_sport": 11, "activity_type": "walking:hiking"},
+            {**trip(203), "fit_sport": 22, "activity_type": "motorcycling:generic"},
+            {**trip(204), "fit_sport": 21, "activity_type": "running:generic"},
+            {**trip(205), "fit_sport": True, "activity_type": "unknown:generic"},
+        ]
+        details = {f"/api/v1/trips/{row['id']}.json": row for row in included}
+        client = mock.Mock(
+            side_effect=lambda path, params: listing(included + excluded)
+            if path == "/api/v1/trips.json"
+            else {"trip": details[path]}
+        )
+        result = self.sync(client)
+        self.assertEqual((result["imported"], result["skipped"]), (len(included), len(excluded)))
+        records = {row["source_activity_id"]: row for row in self.index().values()}
+        for identifier, sport, sub, kind, expected in specifications:
+            with self.subTest(identifier=identifier):
+                row = records[str(identifier)]
+                self.assertEqual(row["sport_type"], expected)
+                self.assertEqual(row["type"], "EBikeRide" if expected != "Ride" else "Ride")
+                self.assertEqual(row["source_activity_type"], kind)
+                if sport is not None:
+                    self.assertEqual(row["source_fit_sport"], sport)
+                if sub is not None:
+                    self.assertEqual(row["source_fit_sub_sport"], sub)
+        self.assertEqual(client.call_count, 1 + len(included))
+
+    def test_cached_ebike_taxonomy_correction_keeps_original_recording_id(self):
+        from gradient_ascent.recordings import import_activity_recording
+
+        original = trip()
+        self.sync(mock.Mock(side_effect=[listing([original]), {"trip": original}]))
+        old_id = next(iter(self.index()))
+        corrected = {
+            **original,
+            "fit_sport": 21,
+            "fit_sub_sport": 47,
+            "activity_type": "e_biking:mountain",
+        }
+        client = mock.Mock(return_value=listing([corrected]))
+        self.assertEqual(self.sync(client)["existing"], 1)
+        client.assert_called_once()
+        self.assertEqual(set(self.index()), {old_id})
+        self.assertEqual(self.index()[old_id]["sport_type"], "EMountainBikeRide")
+        metadata = json.loads(
+            (self.workspace / "integrations" / "ridewithgps" / "files" / "101.json").read_text()
+        )
+        self.assertEqual(metadata["source_fit_sub_sport"], 47)
+        raw = (
+            self.workspace
+            / "integrations"
+            / "ridewithgps"
+            / "files"
+            / f"101-{old_id.removeprefix('recording-')}.tcx"
+        )
+        import_activity_recording(self.workspace, raw)
+        self.assertEqual(self.index()[old_id]["sport_type"], "EMountainBikeRide")
+        self.assertEqual(self.sync(mock.Mock(return_value=listing([corrected])))["existing"], 1)
+        self.assertEqual(set(self.index()), {old_id})
+        self.assertEqual(self.index()[old_id]["source_fit_sub_sport"], 47)
+
+    def test_cached_sport_correction_removes_stale_electric_taxonomy(self):
+        from gradient_ascent.recordings import import_activity_recording
+
+        original = {
+            **trip(),
+            "fit_sport": 21,
+            "fit_sub_sport": 47,
+            "activity_type": "e_biking:mountain",
+        }
+        self.sync(mock.Mock(side_effect=[listing([original]), {"trip": original}]))
+        record_id = next(iter(self.index()))
+        corrected = {
+            **original,
+            "fit_sport": None,
+            "fit_sub_sport": None,
+            "activity_type": "cycling:generic",
+        }
+        self.sync(mock.Mock(return_value=listing([corrected])))
+        row = self.index()[record_id]
+        self.assertEqual(row["sport_type"], "Ride")
+        self.assertNotIn("source_fit_sport", row)
+        self.assertNotIn("source_fit_sub_sport", row)
+        files = self.workspace / "integrations" / "ridewithgps" / "files"
+        metadata = json.loads((files / "101.json").read_text())
+        self.assertNotIn("source_fit_sport", metadata)
+        self.assertNotIn("source_fit_sub_sport", metadata)
+        import_activity_recording(
+            self.workspace, files / f"101-{record_id.removeprefix('recording-')}.tcx"
+        )
+        self.assertEqual(self.index()[record_id]["sport_type"], "Ride")
+
     def test_repeat_skips_details_and_edited_trip_replaces_only_its_old_index(self):
         original = trip()
         self.sync(mock.Mock(side_effect=[listing([original]), {"trip": original}]))

@@ -41,6 +41,30 @@ _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _TCX = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
 _EXT = "http://www.garmin.com/xmlschemas/ActivityExtension/v2"
 _GET_JSON = Callable[[str, dict[str, int | str]], dict[str, Any]]
+_SOURCE_TAXONOMY_FIELDS = ("source_activity_type", "source_fit_sport", "source_fit_sub_sport")
+# https://ridewithgps.com/api/v1/doc/reference/activity_types
+_CYCLING_TYPES = frozenset(
+    {
+        "cycling:generic",
+        "cycling:road",
+        "cycling:gravel",
+        "cycling:cyclocross",
+        "cycling:mountain",
+        "cycling:recumbent",
+        "cycling:hand_cycling",
+        "cycling:commute",
+        "cycling:indoor",
+        "cycling:virtual",
+        "e_biking:generic",
+        "e_biking:road",
+        "e_biking:mountain",
+        "cycling",
+        "bike",
+        "biking",
+        "ride",
+        "virtualride",
+    }
+)
 
 
 def _owner(metadata: os.stat_result) -> None:
@@ -349,9 +373,50 @@ def _next_page(response: dict[str, Any], page: int, page_size: int, count: int) 
 
 
 def _cycling(trip: dict[str, Any]) -> bool:
-    return (type(trip.get("fit_sport")) is int and trip["fit_sport"] == 2) or str(
-        trip.get("activity_type", "")
-    ).casefold() in {"cycling", "bike", "biking", "ride", "virtualride"}
+    kind = trip.get("activity_type")
+    kind = kind.strip().casefold() if isinstance(kind, str) else ""
+    if kind in _CYCLING_TYPES:
+        return True
+    # Explicit non-cycling labels take precedence over contradictory FIT data.
+    return (
+        kind in {"", "unknown:generic"}
+        and type(trip.get("fit_sport")) is int
+        and trip["fit_sport"] in {2, 21}
+    )
+
+
+def _source_taxonomy(trip: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    kind = trip.get("activity_type")
+    if isinstance(kind, str):
+        kind = kind.strip().casefold()
+        if kind in _CYCLING_TYPES or kind == "unknown:generic":
+            result["source_activity_type"] = kind
+    for key in ("fit_sport", "fit_sub_sport"):
+        value = trip.get(key)
+        if type(value) is int and 0 <= value <= 254:
+            result[f"source_{key}"] = value
+    return result
+
+
+def _sport_metadata(trip: dict[str, Any]) -> dict[str, Any]:
+    """Return only documented cycling classifications and bounded source values."""
+    if not _cycling(trip):
+        return {}
+    source = _source_taxonomy(trip)
+    kind = source.get("source_activity_type", "")
+    sport, sub = source.get("source_fit_sport"), source.get("source_fit_sub_sport")
+    electric = kind.startswith("e_biking:") or sport == 21 or sub in {28, 47}
+    mountain = kind == "e_biking:mountain" or sub in {8, 47}
+    return {
+        **source,
+        "type": "EBikeRide" if electric else "Ride",
+        "sport_type": "EMountainBikeRide"
+        if electric and mountain
+        else "EBikeRide"
+        if electric
+        else "Ride",
+    }
 
 
 def _owned_record(activity: Any, activity_id: str, trip_id: str) -> bool:
@@ -472,6 +537,9 @@ def _decorate(
         source_activity_id=identifier,
         source_url=f"https://ridewithgps.com/trips/{identifier}",
     )
+    for key in _SOURCE_TAXONOMY_FIELDS:
+        activity.pop(key, None)
+    activity.update(_sport_metadata(trip))
 
 
 def _summary(full_history: bool) -> dict[str, Any]:
@@ -625,12 +693,18 @@ def sync_ridewithgps(
                             previous_activity=activities[activity_id],
                         )
                         provider_name = _provider_name(trip.get("name"))
-                        if (
-                            provider_name is not None
-                            and previous.get("last_provider_name") != provider_name
-                        ):
-                            previous = {**previous, "last_provider_name": provider_name}
-                            metadata_updates[metadata_name] = previous
+                        refreshed_metadata = {
+                            **{
+                                key: value
+                                for key, value in previous.items()
+                                if key not in _SOURCE_TAXONOMY_FIELDS
+                            },
+                            **_source_taxonomy(trip),
+                        }
+                        if provider_name is not None:
+                            refreshed_metadata["last_provider_name"] = provider_name
+                        if refreshed_metadata != previous:
+                            metadata_updates[metadata_name] = refreshed_metadata
                     else:
                         borrowed = _read(files, f"{identifier}-{old_sha}.tcx", MAX_TCX_BYTES)
                         if borrowed is None or hashlib.sha256(borrowed).hexdigest() != old_sha:
@@ -724,6 +798,7 @@ def sync_ridewithgps(
                     "updated_at": updated_at,
                     "departed_at": trip["departed_at"],
                     "time_zone": trip["time_zone"],
+                    **_source_taxonomy(trip),
                     "last_provider_name": _provider_name(trip.get("name"))
                     or (previous.get("last_provider_name") if previous else None),
                     "superseded": superseded,

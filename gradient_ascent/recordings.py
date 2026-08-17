@@ -110,6 +110,24 @@ def import_activity_recording(
             value = existing.get(key)
             if isinstance(value, str) and value:
                 activity[key] = value
+        if (
+            existing.get("import_source") == LOCAL_RECORDING_SOURCE
+            and existing.get("source_provider") == "ridewithgps"
+            and isinstance(existing.get("source_activity_id"), str)
+            and re.fullmatch(r"[1-9][0-9]{0,31}", existing["source_activity_id"])
+        ):
+            # Reuse the provider's strict classifier only for an exact-content
+            # row it already owns. Arbitrary/manual sport strings are not kept.
+            from .ridewithgps import _sport_metadata
+
+            activity.update(
+                _sport_metadata(
+                    {
+                        key: existing.get(f"source_{key}")
+                        for key in ("activity_type", "fit_sport", "fit_sub_sport")
+                    }
+                )
+            )
     activities[activity_id] = activity
     write_json(_activities_path(data_dir), activities)
     write_json(data_dir / "recordings" / "streams" / f"{activity_id}.json", prepared["streams"])

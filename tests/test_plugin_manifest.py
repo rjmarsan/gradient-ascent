@@ -24,7 +24,7 @@ class PluginManifestTest(unittest.TestCase):
         self.assertEqual(manifest["name"], "gradient-ascent")
         self.assertEqual(manifest["interface"]["displayName"], "Gradient Ascent")
         self.assertEqual(project["project"]["name"], "gradient-ascent")
-        self.assertEqual(manifest["version"], "0.2.0")
+        self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
         self.assertEqual(manifest["version"], project["project"]["version"])
         self.assertIn("gradient-ascent", project["project"]["scripts"])
         self.assertIn("Gradient Ascent", setup_prompt)

@@ -1,7 +1,7 @@
 {
   "name": "gradient-ascent",
   "version": "0.2.0",
-  "description": "Local-first cycling coaching, training-plan imports, activity history, recovery data, and dashboards for Codex.",
+  "description": "Local-first cycling coaching, local activity and recovery imports, optional Ride with GPS sync through its official ride CLI, and dashboards for Codex.",
   "author": {
     "name": "Gradient Ascent Contributors"
   },
@@ -10,6 +10,8 @@
     "cycling",
     "training",
     "coach",
+    "ridewithgps",
+    "ride-cli",
     "strava",
     "garmin",
     "codex"
@@ -17,8 +19,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Gradient Ascent",
-    "shortDescription": "Goals, plans, local data imports, notes, and cycling advice.",
-    "longDescription": "Gradient Ascent packages a local-first cycling workflow: formal goals, plan imports, official Strava and Garmin account archives, Apple Health exports, a local Training Center, persistent coach notes, and multi-lens coaching advice.",
+    "shortDescription": "Local imports, coaching, and optional Ride with GPS sync.",
+    "longDescription": "Gradient Ascent packages a local-first cycling workflow: goals, plans, optional Ride with GPS sync through the actual official ride CLI, official Strava and Garmin account archives, local FIT/TCX/GPX files, Apple Health exports, a Training Center, and persistent coaching advice. The vendor CLI owns sign-in and tokens; this independent integration does not imply vendor endorsement.",
     "developerName": "Gradient Ascent Contributors",
     "category": "Productivity",
     "capabilities": [
@@ -28,7 +30,7 @@
     "defaultPrompt": [
       "Use $gradient-ascent to set up coaching in this workspace.",
       "Use $coach-setup-plan to import my training calendar and event plan.",
-      "Use $coach-setup-activities to import activity history from my Strava archive.",
+      "Use $coach-setup-activities to connect optional Ride with GPS through its official ride CLI or import my Strava archive and local ride files.",
       "Use $coach-setup-recovery to import recovery and health exports.",
       "Use $coach-setup-status to tell me what Gradient Ascent has configured and what matters next.",
       "Use $gradient-ascent-goals to formalize my goals.",

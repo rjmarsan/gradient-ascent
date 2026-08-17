@@ -37,6 +37,28 @@ class PluginManifestTest(unittest.TestCase):
         self.assertNotIn(".invalid", json.dumps(manifest).lower())
         self.assertEqual(manifest["author"], {"name": "Gradient Ascent Contributors"})
 
+    def test_manifest_discovers_optional_official_ride_cli_and_local_imports(self) -> None:
+        manifest = json.loads((REPO_ROOT / ".codex-plugin" / "plugin.json").read_text())
+        interface = manifest["interface"]
+
+        self.assertIn("ridewithgps", manifest["keywords"])
+        for description in (
+            manifest["description"],
+            interface["shortDescription"],
+            interface["longDescription"],
+        ):
+            with self.subTest(description=description):
+                self.assertIn("Ride with GPS", description)
+                self.assertIn("optional", description.lower())
+        self.assertIn("official ride CLI", interface["longDescription"])
+        self.assertIn("Strava and Garmin account archives", interface["longDescription"])
+        self.assertIn("does not imply vendor endorsement", interface["longDescription"])
+        activity_prompt = next(
+            prompt for prompt in interface["defaultPrompt"] if "$coach-setup-activities" in prompt
+        )
+        self.assertIn("official ride CLI", activity_prompt)
+        self.assertIn("Strava archive", activity_prompt)
+
     def test_hash_locked_install_files_are_documented(self) -> None:
         for filename in ("requirements.lock", "requirements-build.lock"):
             lock_path = REPO_ROOT / filename

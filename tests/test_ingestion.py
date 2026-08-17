@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from datetime import date, timedelta
+from itertools import permutations
 from pathlib import Path
 from unittest import mock
 
@@ -304,6 +305,94 @@ class IngestionTest(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in resolved], ["strava:1", "strava:2"])
         self.assertEqual([item["duplicate_count"] for item in links], [0, 0])
+
+    def test_cross_provider_recording_cannot_bridge_distinct_same_provider_rides(self) -> None:
+        first = {
+            "id": "strava:first",
+            "date": "2026-05-01",
+            "sport_type": "Ride",
+            "start_date_local": "2026-05-01T08:00:00",
+            "moving_time_s": 3600,
+            "distance_m": 30000,
+            "source": {"provider": "strava"},
+        }
+        second = {
+            **first,
+            "id": "strava:second",
+            "start_date_local": "2026-05-01T08:05:00",
+            "moving_time_s": 3550,
+            "distance_m": 29800,
+        }
+        recording = {
+            **first,
+            "id": "recording:middle",
+            "start_date_local": "2026-05-01T08:02:30",
+            "moving_time_s": 3575,
+            "distance_m": 29900,
+            "source": {"provider": "recording"},
+        }
+
+        for ordered in permutations((first, recording, second)):
+            with self.subTest(order=tuple(record["id"] for record in ordered)):
+                resolved, links = resolve_activity_records(list(ordered))
+
+                self.assertEqual(
+                    [record["id"] for record in resolved],
+                    ["strava:first", "strava:second"],
+                )
+                self.assertEqual(sum(link["duplicate_count"] for link in links), 1)
+                self.assertEqual(
+                    sum("recording:middle" in link["candidate_ids"] for link in links),
+                    1,
+                )
+                self.assertTrue(
+                    all(
+                        len(
+                            {
+                                identifier
+                                for identifier in link["candidate_ids"]
+                                if identifier.startswith("strava:")
+                            }
+                        )
+                        == 1
+                        for link in links
+                    )
+                )
+
+    def test_cross_provider_recording_preserves_strict_same_provider_duplicates(self) -> None:
+        first = {
+            "id": "strava:first",
+            "date": "2026-05-01",
+            "sport_type": "Ride",
+            "start_date_local": "2026-05-01T08:00:00",
+            "moving_time_s": 3600,
+            "distance_m": 30000,
+            "source": {"provider": "strava"},
+        }
+        duplicate = {
+            **first,
+            "id": "strava:duplicate",
+            "start_date_local": "2026-05-01T08:00:03",
+            "moving_time_s": 3610,
+            "distance_m": 30100,
+        }
+        recording = {
+            **first,
+            "id": "recording:same",
+            "source": {"provider": "recording"},
+        }
+
+        for ordered in permutations((first, duplicate, recording)):
+            with self.subTest(order=tuple(record["id"] for record in ordered)):
+                resolved, links = resolve_activity_records(list(ordered))
+
+                self.assertEqual(len(resolved), 1)
+                self.assertTrue(resolved[0]["id"].startswith("strava:"))
+                self.assertEqual(links[0]["duplicate_count"], 2)
+                self.assertCountEqual(
+                    links[0]["candidate_ids"],
+                    ["strava:first", "strava:duplicate", "recording:same"],
+                )
 
     def test_same_provider_nearly_identical_recordings_are_deduplicated(self) -> None:
         records = [

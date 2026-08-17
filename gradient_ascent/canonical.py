@@ -379,6 +379,14 @@ def resolve_activity_records(records: list[dict[str, Any]]) -> tuple[list[dict[s
             date_clusters = clusters
         for cluster in date_clusters:
             if any(_is_duplicate_activity(record, existing) for existing in cluster):
+                provider = ((record.get("source") or {}).get("provider")) or ""
+                if provider and any(
+                    (((existing.get("source") or {}).get("provider")) or "") == provider
+                    and existing.get("id") != record.get("id")
+                    and not _is_duplicate_activity(record, existing)
+                    for existing in cluster
+                ):
+                    continue
                 cluster.append(record)
                 break
         else:

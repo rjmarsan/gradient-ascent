@@ -28,6 +28,31 @@ class TrainingCenterPolishTest(unittest.TestCase):
                 )
                 self.assertEqual(activity, original)
 
+    def test_legacy_provider_name_mismatch_does_not_make_placeholders_authored(self) -> None:
+        plan = "Steady endurance"
+        raw = {
+            "source_provider": "ridewithgps",
+            "source_activity_id": "765432100",
+            "source_provider_name": "A newer provider title",
+        }
+        for name in ("765432100", "08/14/26", "Private ride", "765432100.tcx"):
+            with self.subTest(name=name):
+                activity = {"name": name, "raw": dict(raw)}
+                self.assertEqual(
+                    training_center._activity_title_info(activity, planned_name=plan),
+                    (plan, True),
+                )
+                explicit = {**activity, "raw": {**raw, "name_is_authored": True}}
+                self.assertEqual(
+                    training_center._activity_title_info(explicit, planned_name=plan),
+                    (name, False),
+                )
+        meaningful = {"name": "My favorite recovery loop", "raw": raw}
+        self.assertEqual(
+            training_center._activity_title_info(meaningful, planned_name=plan),
+            (meaningful["name"], False),
+        )
+
     def test_plan_fallback_reaches_overview_and_lazy_activity_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .storage import read_json, write_json
+from .activity_titles import is_placeholder_title
 from .power_metrics import _valid_estimate, enrich_recording_power
 from .canonical import (
     canonical_activity_records,
@@ -313,12 +314,19 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
         and re.fullmatch(r"[1-9][0-9]{0,31}", source_activity_id)
     ):
         provider_name = raw.get("source_provider_name")
+        explicit_authored = (
+            activity.get("name_is_authored") is True or raw.get("name_is_authored") is True
+        )
+        inferred_authored = (
+            isinstance(provider_name, str)
+            and bool(provider_name.strip())
+            and provider_name != activity.get("name")
+            and not is_placeholder_title(activity.get("name"), source_ids=(source_activity_id,))
+        )
         source_details = {
             "source_provider": "ridewithgps",
             "source_activity_id": source_activity_id,
-            "name_is_authored": isinstance(provider_name, str)
-            and bool(provider_name.strip())
-            and provider_name != activity.get("name"),
+            "name_is_authored": explicit_authored or inferred_authored,
         }
     return {
         "id": legacy_id if legacy_id is not None else activity.get("id"),

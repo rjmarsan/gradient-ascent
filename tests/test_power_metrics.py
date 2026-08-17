@@ -194,6 +194,46 @@ class PowerMetricsTest(unittest.TestCase):
         row["raw"]["source_activity_id"] = "../escape"
         self.assertNotIn("source_activity_id", _normalize_activity(row, None))
 
+    def test_legacy_placeholders_are_not_inferred_authored_but_explicit_intent_wins(self):
+        from gradient_ascent.insights import _normalize_activity
+
+        for name in (
+            "101",
+            "123456789",
+            "2026-08-17",
+            "08/17/26",
+            "Ridewithgps 123456789.tcx",
+            "Imported Ride",
+        ):
+            row = {
+                "name": name,
+                "source": {"provider": "recording"},
+                "raw": {
+                    "source_provider": "ridewithgps",
+                    "source_activity_id": "101",
+                    "source_provider_name": "Original provider title",
+                },
+            }
+            with self.subTest(name=name):
+                self.assertFalse(_normalize_activity(row, None)["name_is_authored"])
+                self.assertTrue(
+                    _normalize_activity({**row, "name_is_authored": True}, None)["name_is_authored"]
+                )
+                self.assertTrue(
+                    _normalize_activity(
+                        {**row, "raw": {**row["raw"], "name_is_authored": True}}, None
+                    )["name_is_authored"]
+                )
+                self.assertFalse(
+                    _normalize_activity({**row, "name_is_authored": "true"}, None)[
+                        "name_is_authored"
+                    ]
+                )
+        meaningful = {**row, "name": "My deliberate custom ride title"}
+        self.assertTrue(_normalize_activity(meaningful, None)["name_is_authored"])
+        unchanged = {**row, "name": "Original provider title"}
+        self.assertFalse(_normalize_activity(unchanged, None)["name_is_authored"])
+
     def test_stream_symlinks_and_extra_cached_payload_are_never_used(self):
         from gradient_ascent import power_metrics
 

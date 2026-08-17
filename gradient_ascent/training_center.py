@@ -11362,11 +11362,13 @@ def _activity_title_info(
     baseline = raw.get("source_provider_name")
     authored = not private and (
         activity.get("name_is_authored") is True
+        or raw.get("name_is_authored") is True
         or (
             raw.get("source_provider") == "ridewithgps"
             and isinstance(baseline, str)
             and bool(baseline.strip())
             and str(name or "").strip() != baseline.strip()
+            and not is_placeholder_title(name, source_ids=source_ids)
         )
     )
     planned = planned_name if planned_name is not None else activity.get("_dashboard_planned_name")

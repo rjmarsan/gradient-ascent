@@ -43,6 +43,29 @@ def _append(body: bytes, addition: bytes, *, blank_line: bool = False) -> bytes:
     return body + separator + addition + b"\n"
 
 
+def _history_ignore_update(body: bytes) -> bytes | None:
+    rules = [line for line in body.splitlines() if line.strip() and not line.startswith(b"#")]
+    if rules and rules[-1] == _HISTORY_IGNORE:
+        return None
+    updated = _append(body, _HISTORY_IGNORE)
+    if len(updated) > MAX_GUIDANCE_BYTES:
+        raise ValueError("Workspace guidance exceeds its size limit.")
+    return updated
+
+
+def _ensure_history_ignore(root: int) -> bool:
+    """Protect private history before persistence, using its already-pinned root."""
+    before = _files._read(root, ".gitignore", MAX_GUIDANCE_BYTES)
+    updated = _history_ignore_update(before or b"")
+    if updated is None:
+        return False
+    if _files._read(root, ".gitignore", MAX_GUIDANCE_BYTES) != before:
+        raise RuntimeError("Workspace ignore rules changed; retry.")
+    _files._write(root, ".gitignore", updated, MAX_GUIDANCE_BYTES)
+    os.fsync(root)
+    return True
+
+
 def install_coaching_history_guidance(
     data_dir: Path, *, expected_identity: tuple[int, int] | None = None
 ) -> dict[str, bool]:
@@ -61,8 +84,9 @@ def install_coaching_history_guidance(
         updates = {}
         if _managed_section(agents) is None:
             updates["AGENTS.md"] = _append(agents, section, blank_line=True)
-        if _HISTORY_IGNORE not in {line.strip() for line in ignore.splitlines()}:
-            updates[".gitignore"] = _append(ignore, _HISTORY_IGNORE)
+        ignore_update = _history_ignore_update(ignore)
+        if ignore_update is not None:
+            updates[".gitignore"] = ignore_update
         if any(len(body) > MAX_GUIDANCE_BYTES for body in updates.values()):
             raise ValueError("Workspace guidance exceeds its size limit.")
         _files._assert_generation(data_dir, root, identity)

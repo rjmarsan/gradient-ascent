@@ -127,8 +127,9 @@ normal refresh does not create a retrospective baseline. Reinitializing with
 `init-workspace --force` preserves existing authoritative plan files; it is not a
 way to reset the athlete's plan.
 
-`plan/.history/` is ignored by the workspace's Git defaults. Arrange an appropriate
-private local backup for the journal and snapshots; do not put them in public Git.
+`plan/.history/` is ignored by the workspace's Git defaults. The first history
+write adds that rule to older workspaces before creating private journal or snapshot
+files. Arrange an appropriate private local backup; do not put history in public Git.
 The history engine is bounded: an official file may be at most 8 MiB, a change's
 before or after file set at most 32 MiB, and the journal at most 32 MiB. If a limit
 or unsupported platform blocks a write, keep the existing files and report the

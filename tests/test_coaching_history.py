@@ -31,6 +31,123 @@ def setup(root):
 
 
 class CoachingHistoryTest(unittest.TestCase):
+    def test_old_workspace_capture_installs_private_ignore_before_journal(self):
+        from gradient_ascent import coaching_history as history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            (root / ".gitignore").write_bytes(b"custom-entry")
+            save = history._save
+
+            def checked_save(directory, document):
+                result = save(directory, document)
+                self.assertIn(b"plan/.history/\n", (root / ".gitignore").read_bytes())
+                return result
+
+            with mock.patch.object(history, "_save", side_effect=checked_save):
+                first = history.capture_coaching_entry(root, entry())
+            self.assertTrue(first["created"])
+            self.assertEqual((root / ".gitignore").read_bytes(), b"custom-entry\nplan/.history/\n")
+            self.assertFalse((root / "AGENTS.md").exists())
+            self.assertEqual(history.capture_coaching_entry(root, entry())["created"], False)
+            self.assertEqual((root / ".gitignore").read_bytes().count(b"plan/.history/"), 1)
+
+    def test_old_workspace_writer_installs_ignore_before_any_snapshot(self):
+        from gradient_ascent import coaching_history as history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            write = history._files._write
+
+            def checked_write(directory, name, body, limit):
+                if name != ".gitignore":
+                    self.assertTrue(
+                        (root / ".gitignore").read_bytes().endswith(b"plan/.history/\n")
+                    )
+                return write(directory, name, body, limit)
+
+            with mock.patch.object(history._files, "_write", side_effect=checked_write):
+                changed = history.apply_plan_change(
+                    root, updates={"plan/weeks.json": b"Changed"}, request=request()
+                )
+            self.assertEqual(changed["status"], "applied")
+            self.assertTrue((root / "plan/.history/objects").is_dir())
+            self.assertFalse((root / "AGENTS.md").exists())
+
+    def test_unsafe_ignore_refuses_capture_and_snapshots_without_history(self):
+        from gradient_ascent import coaching_history as history
+
+        for operation in ("capture", "writer", "baseline"):
+            for unsafe in ("symlink", "hardlink", "writable", "oversize"):
+                with (
+                    self.subTest(operation=operation, unsafe=unsafe),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    root = Path(tmp) / "workspace"
+                    setup(root)
+                    ignore = root / ".gitignore"
+                    outside = Path(tmp) / "outside"
+                    outside.write_bytes(b"Protected")
+                    if unsafe == "symlink":
+                        ignore.symlink_to(outside)
+                    elif unsafe == "hardlink":
+                        os.link(outside, ignore)
+                    elif unsafe == "writable":
+                        ignore.write_bytes(b"Unsafe")
+                        ignore.chmod(0o666)
+                    else:
+                        ignore.write_bytes(b"x" * (1024 * 1024 + 1))
+                    with self.assertRaises((OSError, ValueError, RuntimeError)):
+                        if operation == "capture":
+                            history.capture_coaching_entry(root, entry())
+                        elif operation == "writer":
+                            history.apply_plan_change(
+                                root, updates={"plan/weeks.json": b"Changed"}, request=request()
+                            )
+                        else:
+                            history.initialize_plan_history(root)
+                    self.assertFalse((root / "plan/.history").exists())
+                    self.assertEqual((root / "plan/weeks.json").read_bytes(), b"[]\n")
+                    self.assertEqual(outside.read_bytes(), b"Protected")
+
+    def test_existing_history_persistence_reinstalls_removed_ignore_rule(self):
+        from gradient_ascent import coaching_history as history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            history.capture_coaching_entry(root, entry())
+            (root / ".gitignore").write_bytes(b"custom\nplan/.history/\n!plan/.history/\n")
+            history.capture_coaching_entry(root, entry("note-two"))
+            body = (root / ".gitignore").read_bytes()
+            self.assertTrue(body.endswith(b"!plan/.history/\nplan/.history/\n"))
+            self.assertEqual(len(history.recall_coaching_history(root)), 2)
+
+    def test_ignore_prerequisite_never_writes_a_replacement_workspace(self):
+        from gradient_ascent import coaching_history as history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, old = Path(tmp) / "workspace", Path(tmp) / "old"
+            setup(root)
+            write = history._files._write
+
+            def replace(directory, name, body, limit):
+                if name == ".gitignore":
+                    root.rename(old)
+                    setup(root)
+                return write(directory, name, body, limit)
+
+            with (
+                mock.patch.object(history._files, "_write", side_effect=replace),
+                self.assertRaises(RuntimeError),
+            ):
+                history.capture_coaching_entry(root, entry())
+            self.assertFalse((root / ".gitignore").exists())
+            self.assertFalse((root / "plan/.history").exists())
+            self.assertEqual((root / "plan/weeks.json").read_bytes(), b"[]\n")
+
     def test_drift_without_baseline_is_unknown_and_read_only(self):
         from gradient_ascent import coaching_history as history
 

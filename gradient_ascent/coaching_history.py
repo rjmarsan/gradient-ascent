@@ -431,6 +431,10 @@ def _private(descriptor: int) -> None:
 
 @contextmanager
 def _history_dir(root: int, *, create: bool = False):
+    if create:
+        from .workspace_guidance import _ensure_history_ignore
+
+        _ensure_history_ignore(root)
     with _files._directory(root, "plan", create=create) as plan:
         if create:
             os.fsync(root)

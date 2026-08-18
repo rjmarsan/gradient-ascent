@@ -349,9 +349,10 @@ class SeasonLoadChartTest(unittest.TestCase):
         self.assertNotIn("weekly hours", result["note"])
         self.assertIn("not measured fitness", result["note"])
 
-    def test_visible_chart_key_uses_ctl_atl_and_keeps_hours_in_week_totals(self):
+    def test_chart_modes_offer_weekly_tss_and_ctl_atl_and_keep_hours_in_totals(self):
         template = training_center.HTML_TEMPLATE
         for expected in (
+            "<strong>Weekly TSS</strong>",
             "CTL",
             "ATL",
             "42-day",
@@ -361,7 +362,6 @@ class SeasonLoadChartTest(unittest.TestCase):
             "<span>Recorded hours</span>",
         ):
             self.assertTrue(expected in template, expected)
-        self.assertNotIn("<strong>Weekly TSS</strong>", template)
 
     def test_legacy_hours_and_rough_daily_totals_remain_chart_gaps(self):
         weeks = []

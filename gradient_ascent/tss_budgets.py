@@ -8,12 +8,19 @@ import math
 import os
 import re
 import stat
-from datetime import date, datetime, timezone
+from collections.abc import Mapping
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from . import recording_repair as _recording_files
-from .planned_load import MAX_WEEKLY_TSS, _mapping_range
+from .planned_load import (
+    MAX_DAILY_TSS,
+    MAX_WEEKLY_TSS,
+    _mapping_range,
+    _prescribed_range,
+    structured_workout_load,
+)
 from .planned_workouts import MAX_STRUCTURED_WORKOUTS, _structured
 from .recording_repair import (
     _assert_generation,
@@ -31,6 +38,7 @@ MAX_CONTEXT_BYTES = 8 * 1024 * 1024
 MAX_RATIONALE_BYTES = 4096
 MAX_CONDITIONS = 16
 MAX_CONDITION_BYTES = 1024
+MAX_DAY_RATIONALE_BYTES = 1024
 _FILE = "tss_budgets.json"
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _DRAFT_KEYS = {
@@ -43,6 +51,8 @@ _DRAFT_KEYS = {
     "rationale",
     "conditions",
     "override_source",
+    "override_daily_source",
+    "daily_tss",
     "expected_plan_fingerprint",
 }
 _STORED_KEYS = (_DRAFT_KEYS - {"expected_plan_fingerprint"}) | {
@@ -145,6 +155,37 @@ def _key(entry: dict[str, Any]) -> tuple[str, str]:
     return start, end
 
 
+def _allocation(value: Any, start: str, end: str, target: float) -> list[dict[str, Any]]:
+    first, last = date.fromisoformat(start), date.fromisoformat(end)
+    expected = {
+        (first + timedelta(days=offset)).isoformat() for offset in range((last - first).days + 1)
+    }
+    if not isinstance(value, list) or len(value) != len(expected):
+        raise ValueError("daily_tss must cover every date in the source week exactly once.")
+    by_date = {}
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or not {"date", "target_tss"} <= set(item)
+            or set(item) - {"date", "target_tss", "rationale"}
+        ):
+            raise ValueError(
+                "daily_tss entries require only date, target_tss and optional rationale."
+            )
+        day, score = _day(item["date"]), _number(item["target_tss"])
+        if day not in expected or day in by_date or score > MAX_DAILY_TSS:
+            raise ValueError("daily_tss dates or targets are outside their bounds.")
+        normalized = {"date": day, "target_tss": score}
+        if "rationale" in item:
+            normalized["rationale"] = _text(item["rationale"], MAX_DAY_RATIONALE_BYTES)
+        by_date[day] = normalized
+    if not math.isclose(
+        math.fsum(item["target_tss"] for item in by_date.values()), target, rel_tol=0, abs_tol=1e-6
+    ):
+        raise ValueError("daily_tss targets must sum to the weekly central target.")
+    return [by_date[day] for day in sorted(by_date)]
+
+
 def _entry(value: Any, *, stored: bool) -> dict[str, Any]:
     allowed = _STORED_KEYS if stored else _DRAFT_KEYS
     if not isinstance(value, dict) or set(value) - allowed:
@@ -161,6 +202,7 @@ def _entry(value: Any, *, stored: bool) -> dict[str, Any]:
     if (
         status not in ("provisional", "confirmed")
         or type(value.get("override_source", False)) is not bool
+        or type(value.get("override_daily_source", False)) is not bool
     ):
         raise ValueError("TSS budget status or override_source is invalid.")
     conditions = value.get("conditions", [])
@@ -176,6 +218,14 @@ def _entry(value: Any, *, stored: bool) -> dict[str, Any]:
         "conditions": [_text(item, MAX_CONDITION_BYTES) for item in conditions],
         "override_source": value.get("override_source", False),
     }
+    if stored or "override_daily_source" in value:
+        result["override_daily_source"] = value.get("override_daily_source", False)
+    if "daily_tss" in value:
+        result["daily_tss"] = (
+            None
+            if value["daily_tss"] is None and not stored
+            else _allocation(value["daily_tss"], start, end, target)
+        )
     if "ceiling_tss" in value:
         ceiling = _number(value["ceiling_tss"])
         if ceiling < high:
@@ -418,6 +468,80 @@ def tss_budget_summary(data_dir: Path) -> dict[str, int]:
     return _summary(load_tss_budgets(data_dir))
 
 
+def coach_daily_tss(
+    budgets: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Flatten current explicit allocations; never infer targets or resolve source conflicts."""
+    result = {}
+    for key, value in budgets.items():
+        if value.get("state") != "current" or "daily_tss" not in value:
+            continue
+        entry = _entry({name: item for name, item in value.items() if name != "state"}, stored=True)
+        if _key(entry) != key:
+            raise ValueError("TSS budget dates do not match their resolved key.")
+        for day in entry["daily_tss"]:
+            if day["date"] in result:
+                raise ValueError("Daily TSS allocations cannot overlap.")
+            result[day["date"]] = {
+                **day,
+                "rationale": day.get("rationale", ""),
+                "source": "coach_budget_allocation",
+                "tss_source": "coach_budget_allocation",
+                "status": entry["status"],
+                "budget_status": entry["status"],
+                "budget_start_date": entry["start_date"],
+                "budget_end_date": entry["end_date"],
+                "budget_revision": entry["revision"],
+                "budget_rationale": entry["rationale"],
+                "budget_conditions": list(entry["conditions"]),
+                "override_source": entry["override_source"],
+                "override_daily_source": entry["override_daily_source"],
+            }
+    return dict(sorted(result.items()))
+
+
+def _daily_source_bounds(
+    week: dict[str, Any],
+    context: dict[str, Any],
+    day: str,
+) -> tuple[float, float] | None:
+    weekday = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[date.fromisoformat(day).weekday()]
+    sources = week.get("day_loads")
+    source = sources.get(weekday) if isinstance(sources, dict) else None
+    prose = week.get("days")
+    text = str(prose.get(weekday) or "") if isinstance(prose, dict) else ""
+    workouts = [item for item in context["workouts"] if item["date"] == day]
+    if not workouts or text.strip() or isinstance(source, dict):
+        # Reuse the dashboard's pure interpretation so explicit rest, source
+        # prose TSS, cancellation and mixed-sport guards cannot diverge. This
+        # local import avoids the module-level dashboard/budget import cycle.
+        from .training_center import _planned_load_for_day
+
+        events = [item for item in context["events"] if _overlaps(item, day, day)]
+        return _prescribed_range(_planned_load_for_day(text, events, source_load=source))
+    bounds = [
+        _prescribed_range(structured_workout_load(item, ftp_w=context["athlete"].get("ftp_w")))
+        for item in workouts
+    ]
+    if any(item is None for item in bounds):
+        return None
+    low, high = (math.fsum(item[index] for item in bounds) for index in (0, 1))
+    return (low, high) if high <= MAX_DAILY_TSS else None
+
+
+def _validate_daily_sources(
+    entry: dict[str, Any], week: dict[str, Any], context: dict[str, Any]
+) -> None:
+    if entry.get("override_daily_source") is True:
+        return
+    for item in entry.get("daily_tss", []):
+        bounds = _daily_source_bounds(week, context, item["date"])
+        if bounds is not None and not bounds[0] - 1e-6 <= item["target_tss"] <= bounds[1] + 1e-6:
+            raise ValueError(
+                "A conflicting daily prescription requires override_daily_source:true."
+            )
+
+
 def update_tss_budgets(
     data_dir: Path,
     draft_path: Path,
@@ -454,6 +578,21 @@ def update_tss_budgets(
                 raise ValueError(
                     "Reapproving a changed plan requires its expected_plan_fingerprint."
                 )
+            previous = old.get(key)
+            allocation_omitted = "daily_tss" not in entry
+            if allocation_omitted and previous and "daily_tss" in previous:
+                if entry["target_tss"] != previous["target_tss"]:
+                    raise ValueError(
+                        "Changing the weekly target requires replacing or clearing daily_tss."
+                    )
+                entry["daily_tss"] = previous["daily_tss"]
+            elif entry.get("daily_tss") is None:
+                entry.pop("daily_tss", None)
+            entry.setdefault(
+                "override_daily_source",
+                bool(allocation_omitted and previous and previous.get("override_daily_source")),
+            )
+            _validate_daily_sources(entry, weeks[key], context)
             source_target = _mapping_range(weeks[key].get("tss_target"), MAX_WEEKLY_TSS)
             if (
                 source_target is not None
@@ -464,7 +603,6 @@ def update_tss_budgets(
                 )
             ):
                 raise ValueError("A conflicting source TSS target requires override_source:true.")
-            previous = old.get(key)
             semantic_previous = {
                 name: value
                 for name, value in (previous or {}).items()

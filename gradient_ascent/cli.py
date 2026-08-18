@@ -293,7 +293,9 @@ def _parse_args() -> argparse.Namespace:
         "--replace", action="store_true", help="Replace the complete coach-budget set"
     )
     budget_update_parser.add_argument(
-        "--no-rebuild", action="store_true", help="Save without rebuilding local insights and dashboard"
+        "--no-rebuild",
+        action="store_true",
+        help="Save without rebuilding local insights and dashboard",
     )
     budget_status_parser = subparsers.add_parser(
         "tss-budget-status", help="Show local coach-budget counts and review status"
@@ -302,6 +304,11 @@ def _parse_args() -> argparse.Namespace:
         "--fingerprints",
         action="store_true",
         help="Also show source-week dates and plan fingerprints",
+    )
+    budget_status_parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="Also show current explicit daily TSS allocations and their provenance",
     )
 
     export_plan_parser = subparsers.add_parser(
@@ -752,6 +759,8 @@ def main() -> None:
 
     if args.command in {"update-tss-budgets", "tss-budget-status"}:
         from .tss_budgets import (
+            coach_daily_tss,
+            load_tss_budgets,
             plan_tss_budget_fingerprints,
             tss_budget_summary,
             update_tss_budgets,
@@ -770,6 +779,10 @@ def main() -> None:
                                 plan_tss_budget_fingerprints(config.data_dir).items()
                             )
                         ]
+                    if args.daily:
+                        result["daily_tss"] = list(
+                            coach_daily_tss(load_tss_budgets(config.data_dir)).values()
+                        )
                 else:
                     try:
                         updated = update_tss_budgets(

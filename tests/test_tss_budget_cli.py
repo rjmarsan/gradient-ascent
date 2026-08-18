@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,6 +60,44 @@ def run_cli(root: Path, *args: str) -> dict:
 
 
 class TssBudgetCliTest(unittest.TestCase):
+    def test_current_daily_allocations_are_an_explicit_read_only_status_option(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "athlete"
+            make_workspace(root)
+            start = date.fromisoformat(WEEK["start_date"])
+            values = (0, 80, 30, 60, 20, 100, 40)
+            draft = make_draft(
+                Path(tmp) / "draft.json",
+                daily_tss=[
+                    {
+                        "date": (start + timedelta(days=index)).isoformat(),
+                        "target_tss": value,
+                        "rationale": "Private synthetic daily rationale.",
+                    }
+                    for index, value in enumerate(values)
+                ],
+            )
+            update_tss_budgets(root, draft)
+            before = (root / "plan/tss_budgets.json").read_bytes()
+            with (
+                patch("socket.socket", side_effect=AssertionError("offline")),
+                patch("subprocess.Popen", side_effect=AssertionError("offline")),
+            ):
+                status = run_cli(root, "tss-budget-status")
+                detailed = run_cli(root, "tss-budget-status", "--daily")
+            self.assertNotIn("daily_tss", status)
+            self.assertNotIn("Private synthetic", json.dumps(status))
+            self.assertEqual([item["target_tss"] for item in detailed["daily_tss"]], list(values))
+            self.assertTrue(
+                all(
+                    item["tss_source"] == "coach_budget_allocation"
+                    for item in detailed["daily_tss"]
+                )
+            )
+            self.assertTrue(all(item["status"] == "provisional" for item in detailed["daily_tss"]))
+            self.assertFalse(detailed["external_access"])
+            self.assertEqual((root / "plan/tss_budgets.json").read_bytes(), before)
+
     def test_status_is_aggregate_and_fingerprints_are_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "athlete"

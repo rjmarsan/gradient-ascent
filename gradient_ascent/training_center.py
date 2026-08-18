@@ -20,6 +20,7 @@ from .dashboard_labels import day_labels_by_date, ride_annotations_by_id
 from .planned_load import (
     MAX_DAILY_HOURS,
     MAX_DAILY_TSS,
+    _prescribed_range,
     day_planned_load,
     parse_source_range,
     structured_workout_load,
@@ -29,7 +30,8 @@ from .planned_workouts import load_structured_workouts
 from .progress import build_progress_artifact
 from .storage import ensure_text_line, read_json, write_json, write_text
 from .training_load import build_training_load
-from .tss_budgets import load_tss_budgets
+from .training_load_projection import MAX_PROJECTION_DAYS, build_training_load_projection
+from .tss_budgets import coach_daily_tss, load_tss_budgets
 from .workspace_lock import cross_process_locking_available, workspace_lock
 
 
@@ -6527,6 +6529,33 @@ HTML_TEMPLATE = """<!doctype html>
     .season-chart-key span { display: inline-flex; align-items: center; gap: 5px; }
     .season-chart-key i { width: 13px; height: 0; border: 0; border-top: 2px solid #3d756e; }
     .season-chart-key .atl-key i { border-color: #8a719d; }
+    .season-chart-key .projected-key i { border-color: #6c8179; border-top-style: dashed; }
+    .season-chart-key .planned-key i { border-color: #7d9b7a; }
+    .season-chart-key .range-key i { height: 6px; border: 1px solid #aabd9f; background: #d3dfcd; }
+    .season-chart-key .recorded-key i { height: 6px; border: 1px solid #527966; background: #527966; }
+
+    .season-chart-switcher {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid rgba(23, 63, 49, .16);
+      border-radius: 5px;
+      background: rgba(23, 63, 49, .035);
+    }
+    .season-chart-switcher button {
+      border: 0;
+      border-radius: 3px;
+      padding: 5px 8px;
+      background: transparent;
+      color: #6e7569;
+      font: inherit;
+      letter-spacing: inherit;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .season-chart-switcher button[aria-pressed="true"] { background: #fffef8; color: #294735; box-shadow: 0 1px 3px rgba(23, 63, 49, .09); }
+    .season-chart-switcher button:focus-visible { outline: 2px solid #173f31; outline-offset: 2px; }
 
     .season-selection-key {
       display: inline-flex;
@@ -6607,7 +6636,16 @@ HTML_TEMPLATE = """<!doctype html>
     .season-atl-line { fill: none; stroke: #8a719d; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
     .season-ctl-dot { fill: #3d756e; }
     .season-atl-dot { fill: #8a719d; }
-    .season-day-hit { fill: transparent; }
+    .season-projected-ctl-line { fill: none; stroke: #3d756e; stroke-width: 1.8; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+    .season-projected-atl-line { fill: none; stroke: #8a719d; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+    .season-projected-ctl-dot { fill: #fafaf5; stroke: #3d756e; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .season-projected-atl-dot { fill: #fafaf5; stroke: #8a719d; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .season-planned-area { fill: #a6bba0; fill-opacity: .25; }
+    .season-target-band { fill: #bfd0b6; fill-opacity: .63; }
+    .season-target-line { fill: none; stroke: #7b9c78; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
+    .season-recorded-area { fill: #648774; fill-opacity: .55; }
+    .season-recorded-line { fill: none; stroke: #527966; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .season-day-hit, .season-week-hit { fill: transparent; }
 
     .season-chart-scale {
       position: absolute;
@@ -6625,6 +6663,8 @@ HTML_TEMPLATE = """<!doctype html>
     .season-chart-empty { position: absolute; inset: 0 0 15px; display: grid; place-items: center; color: #777e74; font-size: .7rem; pointer-events: none; }
     .season-load-readout { margin: -1px 0 0; color: #667265; font: .53rem "SFMono-Regular", Consolas, "Liberation Mono", monospace; line-height: 1.5; }
     .season-week-budget-readout { margin: 1px 0 0; color: #667265; font: .6rem "SFMono-Regular", Consolas, "Liberation Mono", monospace; line-height: 1.6; }
+    .season-projection-note { margin: 1px 0 0; color: #74776c; font: .53rem "SFMono-Regular", Consolas, "Liberation Mono", monospace; line-height: 1.5; }
+    .season-overview-horizon .season-projection-note { font-size: .62rem; }
 
     .season-toolbar { flex-direction: row; align-items: center; flex-wrap: wrap; padding: 14px 24px; }
     .season-toolbar > div { width: auto; }
@@ -7784,11 +7824,13 @@ HTML_TEMPLATE = """<!doctype html>
     const BIG_DAY_LABEL = "4h+ or 100+ TSS";
     const POWER_ZONE_FTP = Number(DATA.athlete?.ftp_w);
     const VIEW_STORAGE_KEY = "coach-default-view";
+    const SEASON_CHART_STORAGE_KEY = "gradient-ascent-season-chart";
     const RIDE_SIDEBAR_STORAGE_KEY = "coach-ride-sidebar-open";
     const FLASH_STATUS_STORAGE_KEY = "coach-flash-status";
     const PRIMARY_VIEWS = new Set(["today", "weeks", "calendar", "progress"]);
     const state = {
       view: initialView(),
+      seasonChart: initialSeasonChart(),
       selectedDate: pickInitialDate(),
       calendarYear: null,
       selectedWeekStart: null,
@@ -7816,6 +7858,16 @@ HTML_TEMPLATE = """<!doctype html>
       }
       const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
       return ["today", "weeks", "calendar", "progress"].includes(stored) ? stored : "weeks";
+    }
+
+    function initialSeasonChart() {
+      const requested = new URLSearchParams(window.location.search).get("chart");
+      if (["plan", "load"].includes(requested)) return requested;
+      try {
+        const stored = window.localStorage.getItem(SEASON_CHART_STORAGE_KEY);
+        if (["plan", "load"].includes(stored)) return stored;
+      } catch (_) { /* A blocked preference store should not hide the chart. */ }
+      return "plan";
     }
 
     function initialRideSidebarOpen() {
@@ -8542,10 +8594,22 @@ HTML_TEMPLATE = """<!doctype html>
     function syncNavigationUrl() {
       const url = new URL(window.location.href);
       url.searchParams.set("view", state.view);
+      url.searchParams.set("chart", state.seasonChart === "load" ? "load" : "plan");
       if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(state.selectedDate || "")) url.searchParams.set("date", state.selectedDate);
       if (state.view === "calendar" && /^[0-9]{4}$/.test(state.calendarYear || "")) url.searchParams.set("year", state.calendarYear);
       else url.searchParams.delete("year");
       if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url.href);
+    }
+
+    function setSeasonChart(mode, scope = "current") {
+      if (!["plan", "load"].includes(mode) || mode === state.seasonChart) return;
+      state.seasonChart = mode;
+      try { window.localStorage.setItem(SEASON_CHART_STORAGE_KEY, mode); } catch (_) { /* Optional preference. */ }
+      renderSeasonOverview();
+      renderWeek();
+      syncNavigationUrl();
+      const targetScope = scope === "calendar" ? "calendar" : "current";
+      restoreSeasonFocus(document.querySelector(`[data-season-jump="${targetScope}"]`), `chart-${mode}`);
     }
 
     function setView(view) {
@@ -10176,6 +10240,44 @@ HTML_TEMPLATE = """<!doctype html>
       };
     }
 
+    function renderSeasonPlanChart(series) {
+      const width = 1000;
+      const baseline = 108;
+      const top = 5;
+      const x = (percent) => Number((percent * width / 100).toFixed(2));
+      const y = (tss) => Number((baseline - tss / series.max_tss * (baseline - top)).toFixed(2));
+      const points = (run, key) => [
+        [x(run[0].left), y(run[0][key])],
+        ...run.map((row) => [x(row.center), y(row[key])]),
+        [x(run.at(-1).right), y(run.at(-1)[key])]
+      ];
+      const path = (values) => values.map(([px, py], index) => `${index ? "L" : "M"}${px},${py}`).join(" ");
+      const targets = series.target_runs.map((run) => {
+        const high = points(run, "target_max");
+        const low = points(run, "target_min");
+        return `<path class="season-target-band" d="${path(high)} ${path(low.slice().reverse()).replace(/^M/, "L")} Z"></path>`;
+      }).join("");
+      const plannedArea = series.trajectory_runs.map((run) => {
+        const values = points(run, "target_value");
+        return `<path class="season-planned-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path>`;
+      }).join("");
+      const trajectory = series.trajectory_runs.map((run) =>
+        `<path class="season-target-line" d="${path(points(run, "target_value"))}"></path>`
+      ).join("");
+      const recorded = series.recorded_runs.map((run) => {
+        const values = points(run, "recorded_tss");
+        return `<path class="season-recorded-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path><path class="season-recorded-line" d="${path(values)}"></path>`;
+      }).join("");
+      const hasData = series.target_runs.length || series.recorded_runs.length;
+      return `<svg class="season-load-chart" viewBox="0 0 ${width} 112" preserveAspectRatio="none" aria-hidden="true">
+        <title>Weekly TSS: planned budget, intentional range, and recorded load</title>
+        <line class="season-chart-grid" x1="0" x2="${width}" y1="${baseline}" y2="${baseline}"></line>
+        <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_tss / 2)}" y2="${y(series.max_tss / 2)}"></line>
+        ${plannedArea}${targets}${recorded}${trajectory}
+        ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}${row.target_note && row.target_min !== null ? ` · ${row.target_note}` : ""} · Whole-week totals`)}</title></rect>`).join("")}
+      </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_tss)} TSS/week</span><span>0 TSS/week</span></div>` : '<span class="season-chart-empty">No weekly TSS data</span>'}`;
+    }
+
     function performanceLoadSeries(model, layout, today) {
       const dayMs = 86400000;
       const dateTime = (value) => {
@@ -10299,16 +10401,105 @@ HTML_TEMPLATE = """<!doctype html>
       return {
         latest: series.runs.at(-1)?.at(-1) || null,
         incomplete: series.rows.filter((row) => ["partial", "missing"].includes(row.day_status)).length,
-        note: "CTL and ATL are modeled daily averages of recorded TSS, not measured fitness. All earlier history is used, starting from zero before the first scored day. Empty days contribute zero recorded load, not confirmed rest; incomplete history can understate both curves. Weekly budgets are not divided into invented daily TSS or future curves."
+        note: "CTL and ATL are modeled daily averages of recorded TSS, not measured fitness. All earlier history is used, starting from zero before the first scored day. Empty days contribute zero recorded load, not confirmed rest; incomplete history can understate both curves. Dashed future curves use explicit daily targets as a conditional scenario, never an automatic division of weekly budgets."
       };
     }
 
-    function renderPerformanceLoadChart(series) {
+    function performanceProjectionSeries(model, layout, today, recordedModel) {
+      const dayMs = 86400000;
+      const dateTime = (value) => {
+        const text = String(value || "");
+        if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(text)) return NaN;
+        const time = Date.parse(`${text}T00:00:00Z`);
+        return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === text ? time : NaN;
+      };
+      const numeric = (value, maximum = 1000000) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= maximum ? value : null;
+      const empty = (reason = "no_recorded_baseline") => ({
+        rows: [], runs: [], max_load: 25, anchor: null, through_date: null,
+        requested_through: null, stop_date: null, stop_reason: reason,
+        provisional_days: 0, history_incomplete: false
+      });
+      const spanStart = dateTime(layout?.start_date);
+      const spanEnd = dateTime(layout?.end_date) + dayMs;
+      const todayTime = dateTime(today);
+      if (!Number.isFinite(spanStart) || !Number.isFinite(spanEnd) || spanEnd <= spanStart || !Number.isFinite(todayTime)) return empty("invalid_projection");
+      if (model?.method !== "ctl_atl_daily_projection_v1" || model?.time_constants?.ctl !== 42 || model?.time_constants?.atl !== 7) return empty();
+      if (model.as_of !== today || model.recorded_through !== today || recordedModel?.through_date !== today) return empty("stale_recorded_model");
+      const allowedReasons = ["complete", "missing_daily_target", "no_recorded_baseline", "stale_recorded_model", "invalid_daily_targets"];
+      const reason = allowedReasons.includes(model.summary?.stop_reason) ? model.summary.stop_reason : "invalid_projection";
+      if (!model.anchor) return empty(reason);
+      const sourceAnchors = (Array.isArray(recordedModel?.rows) ? recordedModel.rows : []).filter((row) => row?.date === today);
+      const sourceAnchor = sourceAnchors.length === 1 ? sourceAnchors[0] : null;
+      const anchor = model.anchor;
+      const through = dateTime(model.through_date);
+      const requested = dateTime(model.requested_through);
+      if (recordedModel?.method !== "ctl_atl_daily_ewma_v1" || recordedModel?.time_constants?.ctl !== 42 || recordedModel?.time_constants?.atl !== 7
+        || anchor.date !== today || numeric(anchor.ctl) === null || numeric(anchor.atl) === null
+        || numeric(sourceAnchor?.ctl) === null || numeric(sourceAnchor?.atl) === null
+        || Math.abs(anchor.ctl - sourceAnchor.ctl) > 0.000001 || Math.abs(anchor.atl - sourceAnchor.atl) > 0.000001
+        || !Number.isFinite(through) || !Number.isFinite(requested) || through < todayTime || through > requested || requested - todayTime > 730 * dayMs
+        || !Array.isArray(model.rows) || model.rows.length > 730) return empty("invalid_projection");
+      const percent = (time) => 100 * (time - spanStart) / (spanEnd - spanStart);
+      const geometry = (row, start) => ({ ...row, start_ms: start, end_ms: start + dayMs,
+        left: percent(start), right: percent(start + dayMs), center: percent(start + dayMs / 2) });
+      const allRows = [];
+      let previous = todayTime;
+      let provisional = false;
+      for (const raw of model.rows) {
+        const start = dateTime(raw?.date);
+        const prescribed = ["source_target", "explicit_rest", "structured_power_model", "structured_workout_sum"].includes(raw?.tss_source) && raw?.status === "prescribed";
+        const coached = raw?.tss_source === "coach_budget_allocation" && ["provisional", "confirmed"].includes(raw?.status);
+        if (start !== previous + dayMs || start > through || raw.projected !== true || (!prescribed && !coached)
+          || numeric(raw.ctl) === null || numeric(raw.atl) === null || numeric(raw.target_tss, 21600) === null
+          || (raw.tss_source === "explicit_rest" && raw.target_tss !== 0)) return empty("invalid_projection");
+        provisional = provisional || raw.status === "provisional";
+        allRows.push(geometry({ ...raw, projection_provisional: provisional }, start));
+        previous = start;
+      }
+      if (previous !== through) return empty("invalid_projection");
+      const rows = allRows.filter((row) => row.start_ms >= spanStart && row.start_ms < spanEnd);
+      const visibleAnchor = todayTime >= spanStart && todayTime < spanEnd ? geometry({ ...anchor, anchor: true }, todayTime) : null;
+      const run = rows.length && visibleAnchor && visibleAnchor.end_ms === rows[0].start_ms ? [visibleAnchor, ...rows] : rows;
+      const maximum = run.reduce((value, row) => Math.max(value, row.ctl, row.atl), 0);
+      const tick = maximum <= 50 ? 10 : maximum <= 200 ? 25 : maximum <= 500 ? 50 : Math.pow(10, Math.floor(Math.log10(maximum))) / 2;
+      return {
+        rows, runs: run.length ? [run] : [], max_load: Math.max(25, Math.ceil(maximum / tick) * tick),
+        anchor: { ...anchor }, through_date: model.through_date, requested_through: model.requested_through,
+        stop_date: Number.isFinite(dateTime(model.summary?.stop_date)) ? model.summary.stop_date : null,
+        stop_reason: reason, provisional_days: allRows.filter((row) => row.status === "provisional").length,
+        history_incomplete: model.summary?.history_incomplete === true
+      };
+    }
+
+    function performanceProjectionLabel(row) {
+      if (!row) return "No projected CTL/ATL data";
+      const status = row.projection_provisional ? "Provisional scenario" : "Conditional projection";
+      return `Projected CTL ${performanceLoadNumber(row.ctl)} · ATL ${performanceLoadNumber(row.atl)} TSS/day · ${status}${row.history_incomplete ? " · Incomplete recorded history" : ""}`;
+    }
+
+    function performanceProjectionTooltip(row) {
+      const sources = { source_target: "Source target", explicit_rest: "Explicit rest", structured_power_model: "Prescribed workout model", structured_workout_sum: "Prescribed workout total", coach_budget_allocation: "Coach day target" };
+      return `${dayLabel(row.date)} · ${performanceProjectionLabel(row)} · ${seasonTss(row.target_tss)} planned TSS · ${sources[row.tss_source] || "Explicit daily target"} · Not recorded load`;
+    }
+
+    function performanceProjectionNote(series) {
+      let result = series.through_date && series.anchor && series.through_date > series.anchor.date
+        ? `Conditional projection through ${dayLabel(series.through_date)}${series.provisional_days ? ` · ${series.provisional_days} provisional days` : ""}.`
+        : "No future CTL/ATL scenario yet.";
+      if (series.stop_reason === "stale_recorded_model") result = "Rebuild local insights to update the recorded baseline and projection.";
+      else if (["invalid_projection", "invalid_daily_targets"].includes(series.stop_reason)) result = "Rebuild local insights and review conflicting daily TSS targets.";
+      else if (series.stop_reason === "no_recorded_baseline") result = "A scored recorded day is needed before projecting CTL/ATL.";
+      else if (series.stop_reason === "missing_daily_target" && series.stop_date) result += ` Stops ${dayLabel(series.stop_date)}: daily TSS target not set.`;
+      return `${result} Starts tomorrow; remaining today’s plan excluded.`;
+    }
+
+    function renderPerformanceLoadChart(series, projection = null) {
       const width = 1000;
       const baseline = 108;
       const top = 5;
+      const maxLoad = Math.max(series.max_load, projection?.max_load || 0);
       const x = (percent) => Number((percent * width / 100).toFixed(2));
-      const y = (load) => Number((baseline - load / series.max_load * (baseline - top)).toFixed(2));
+      const y = (load) => Number((baseline - load / maxLoad * (baseline - top)).toFixed(2));
       const points = (run, key) => run.map((row) => [x(row.center), y(row[key])]);
       const path = (values) => values.map(([px, py], index) => `${index ? "L" : "M"}${px},${py}`).join(" ");
       const curves = series.runs.map((run) => {
@@ -10317,13 +10508,21 @@ HTML_TEMPLATE = """<!doctype html>
         const dots = run.length === 1 ? `<circle class="season-ctl-dot" cx="${ctl[0][0]}" cy="${ctl[0][1]}" r="1.7"></circle><circle class="season-atl-dot" cx="${atl[0][0]}" cy="${atl[0][1]}" r="1.7"></circle>` : "";
         return `<path class="season-ctl-area" d="M${ctl[0][0]},${baseline} ${path(ctl).replace(/^M/, "L")} L${ctl.at(-1)[0]},${baseline} Z"></path><path class="season-ctl-line" d="${path(ctl)}"></path><path class="season-atl-line" d="${path(atl)}"></path>${dots}`;
       }).join("");
+      const projected = (projection?.runs || []).map((run) => {
+        const ctl = points(run, "ctl");
+        const atl = points(run, "atl");
+        const dots = run.length === 1 ? `<circle class="season-projected-ctl-dot" cx="${ctl[0][0]}" cy="${ctl[0][1]}" r="2"></circle><circle class="season-projected-atl-dot" cx="${atl[0][0]}" cy="${atl[0][1]}" r="2"></circle>` : "";
+        return `<path class="season-projected-ctl-line" d="${path(ctl)}"></path><path class="season-projected-atl-line" d="${path(atl)}"></path>${dots}`;
+      }).join("");
+      const hasData = series.runs.length || (projection?.runs.length || 0);
       return `<svg class="season-load-chart" viewBox="0 0 ${width} 112" preserveAspectRatio="none" aria-hidden="true">
-        <title>Recorded training load: CTL (42-day) and ATL (7-day), in TSS/day</title>
+        <title>Recorded training load: CTL (42-day) and ATL (7-day), in TSS/day${projected ? "; dashed conditional projection" : ""}</title>
         <line class="season-chart-grid" x1="0" x2="${width}" y1="${baseline}" y2="${baseline}"></line>
-        <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_load / 2)}" y2="${y(series.max_load / 2)}"></line>
-        ${curves}
+        <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(maxLoad / 2)}" y2="${y(maxLoad / 2)}"></line>
+        ${curves}${projected}
         ${series.rows.filter((row) => row.ctl !== null).map((row) => `<rect class="season-day-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(performanceLoadTooltip(row))}</title></rect>`).join("")}
-      </svg>${series.runs.length ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_load)} TSS/day</span><span>0 TSS/day</span></div>` : `<span class="season-chart-empty">${escapeHtml(performanceLoadUnavailableLabel(series))}</span>`}`;
+        ${(projection?.rows || []).map((row) => `<rect class="season-day-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(performanceProjectionTooltip(row))}</title></rect>`).join("")}
+      </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(maxLoad)} TSS/day</span><span>0 TSS/day</span></div>` : `<span class="season-chart-empty">${escapeHtml(performanceLoadUnavailableLabel(series))}</span>`}`;
     }
 
     function seasonHorizonLayout(phases, currentWeek, selectedDate, today, domain = null) {
@@ -10433,9 +10632,15 @@ HTML_TEMPLATE = """<!doctype html>
       const weeklySeries = seasonLoadSeries(DATA.weeks, layout, TODAY);
       const budgets = seasonLoadProvenance(weeklySeries);
       const selectedWeekLoad = weeklySeries.rows.find((row) => row.start_date === currentWeek?.start_date);
+      const mode = state.seasonChart === "load" ? "load" : "plan";
       const loadSeries = performanceLoadSeries(DATA.trainingLoad, layout, TODAY);
-      const provenance = performanceLoadProvenance(loadSeries);
-      const loadSummary = performanceLoadSelectionLabel(loadSeries, state.selectedDate);
+      const projection = performanceProjectionSeries(DATA.trainingLoadProjection, layout, TODAY, DATA.trainingLoad);
+      const performance = performanceLoadProvenance(loadSeries);
+      const provenance = mode === "load" ? performance : budgets;
+      const projectedSelection = projection.rows.find((row) => row.date === state.selectedDate);
+      const loadSummary = mode === "plan" ? seasonWeekLoadLabel(selectedWeekLoad)
+        : projectedSelection ? `${dayLabel(projectedSelection.date)} · ${performanceProjectionLabel(projectedSelection)}`
+          : performanceLoadSelectionLabel(loadSeries, state.selectedDate);
       const eventRows = Array.isArray(DATA.events) ? DATA.events
         : (DATA.days || []).flatMap((day) => (day.events || []).map((event) => ({ ...event, date: event.date || day.date })));
       const races = seasonRaceMarkers(eventRows, layout).map((event) => {
@@ -10443,7 +10648,7 @@ HTML_TEMPLATE = """<!doctype html>
         return { ...event, selectable, description: `${event.description}${selectable ? "" : " · No loaded day for this event"}` };
       });
       const upcoming = races.filter((event) => event.date >= (currentWeek?.start_date || TODAY)).slice(0, 3);
-      const arcLabel = full ? `${year} training load`
+      const arcLabel = full ? `${year} ${mode === "load" ? "training load" : "season plan"}`
         : `${currentWeek?.phase || layout.phases[0]?.name || "Season"} → ${layout.phases.at(-1)?.name || "Plan"}`;
       const shownWeek = currentWeek ? `${dayLabel(currentWeek.start_date)}–${dayLabel(currentWeek.end_date)}` : "None selected";
       const selectedDescription = currentWeek
@@ -10458,6 +10663,14 @@ HTML_TEMPLATE = """<!doctype html>
       const horizonWeeks = (DATA.weeks || []).filter((week) => week.end_date >= layout.start_date && week.start_date <= layout.end_date);
       const selectedIndex = Math.max(0, horizonWeeks.findIndex((week) => week.start_date === currentWeek?.start_date));
       const summaryId = `season-load-summary-${scope}`;
+      const projectionNoteId = `season-projection-note-${scope}`;
+      const budgetStats = `<span><strong>${budgets.budget}</strong> coach-budget weeks${budgets.provisional ? ` · ${budgets.provisional} provisional` : ""}</span>${budgets.source || budgets.prescribed ? `<span><strong>${budgets.source + budgets.prescribed}</strong> source or prescribed-session weeks</span>` : ""}`;
+      const overviewStats = mode === "plan"
+        ? `${budgetStats}<span><strong>${budgets.recorded}</strong> recorded weeks${budgets.incomplete ? ` · ${budgets.incomplete} with incomplete load` : ""}</span>`
+        : `${performance.latest ? `<span><strong>CTL ${performanceLoadNumber(performance.latest.ctl)}</strong> · <strong>ATL ${performanceLoadNumber(performance.latest.atl)}</strong> on ${escapeHtml(dayLabel(performance.latest.date))}</span>` : ""}${loadSeries.through_date ? `<span>Model through <strong>${escapeHtml(dayLabel(loadSeries.through_date))}</strong></span>` : ""}${budgetStats}${performance.incomplete ? `<span><strong>${performance.incomplete}</strong> incomplete recorded-load days in view</span>` : ""}`;
+      const chartKey = mode === "plan"
+        ? '<strong>Weekly TSS</strong><span class="planned-key"><i aria-hidden="true"></i>Planned</span><span class="range-key"><i aria-hidden="true"></i>Intentional range</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded</span>'
+        : '<strong>Training load</strong><span class="ctl-key"><i aria-hidden="true"></i>CTL · 42-day</span><span class="atl-key"><i aria-hidden="true"></i>ATL · 7-day</span><span class="projected-key"><i aria-hidden="true"></i>Conditional projection</span>';
       const raceButton = (event, prefix) => `<button type="button" class="season-race" data-season-date="${escapeHtml(event.date)}" data-season-focus="${prefix}-${escapeHtml(event.date)}" title="${escapeHtml(event.description)}"${event.selectable ? "" : " disabled"}><span>${escapeHtml(dayLabel(event.date))}${event.tentative ? " · tentative" : ""}${event.selectable ? "" : " · no loaded day"}</span><strong>${escapeHtml(event.label)}</strong></button>`;
       return `
         <section class="season-horizon${full ? " season-overview-horizon" : ""}" aria-label="${full ? "Season training load" : "Season horizon"}" data-season-jump="${scope}" data-season-start="${escapeHtml(layout.start_date)}" data-season-end="${escapeHtml(layout.end_date)}">
@@ -10471,18 +10684,19 @@ HTML_TEMPLATE = """<!doctype html>
               ${upcoming.map((event) => raceButton(event, "upcoming")).join("")}
             </div>
           </div>
-          ${full ? `<p class="season-overview-stats">${provenance.latest ? `<span><strong>CTL ${performanceLoadNumber(provenance.latest.ctl)}</strong> · <strong>ATL ${performanceLoadNumber(provenance.latest.atl)}</strong> on ${escapeHtml(dayLabel(provenance.latest.date))}</span>` : ""}${loadSeries.through_date ? `<span>Model through <strong>${escapeHtml(dayLabel(loadSeries.through_date))}</strong></span>` : ""}<span><strong>${budgets.budget}</strong> coach-budget weeks${budgets.provisional ? ` · ${budgets.provisional} provisional` : ""}</span>${budgets.source || budgets.prescribed ? `<span><strong>${budgets.source + budgets.prescribed}</strong> source or prescribed-session weeks</span>` : ""}${provenance.incomplete ? `<span><strong>${provenance.incomplete}</strong> incomplete recorded-load days in view</span>` : ""}</p>` : ""}
+          ${full ? `<p class="season-overview-stats">${overviewStats}</p>` : ""}
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <div class="season-chart-key" title="${escapeHtml(provenance.note)}"><strong>Recorded training load</strong><span class="ctl-key"><i aria-hidden="true"></i>CTL · 42-day</span><span class="atl-key"><i aria-hidden="true"></i>ATL · 7-day</span></div>
+              <div class="season-chart-key" title="${escapeHtml(provenance.note)}">${chartKey}</div>
               <div class="season-track-actions">
+                <div class="season-chart-switcher" role="group" aria-label="Season chart"><button type="button" data-season-chart="plan" data-season-focus="chart-plan" aria-pressed="${mode === "plan"}">Plan</button><button type="button" data-season-chart="load" data-season-focus="chart-load" aria-pressed="${mode === "load"}">CTL / ATL</button></div>
                 <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
                 <button type="button" class="season-today-button" data-season-today data-season-focus="today" aria-label="${escapeHtml(todayDescription)}" title="${escapeHtml(todayDescription)}"${canJumpToday ? "" : " disabled"}><i aria-hidden="true"></i>Today</button>
                 ${full ? `<button type="button" class="season-open-week" data-season-open-week data-season-focus="open"${currentWeek ? "" : " disabled"}>Open week ↗</button>` : ""}
               </div>
             </div>
-            <div class="season-track" ${horizonWeeks.length ? `data-season-track data-season-focus="track" role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${horizonWeeks.length - 1}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}"` : 'role="img" aria-label="Season CTL and ATL chart"'} aria-describedby="${summaryId}">
-              ${renderPerformanceLoadChart(loadSeries)}
+            <div class="season-track" ${horizonWeeks.length ? `data-season-track data-season-focus="track" role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${horizonWeeks.length - 1}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}"` : `role="img" aria-label="${mode === "load" ? "Season CTL and ATL chart" : "Season planned and recorded TSS chart"}"`} aria-describedby="${summaryId}${mode === "load" ? ` ${projectionNoteId}` : ""}">
+              ${mode === "plan" ? renderSeasonPlanChart(weeklySeries) : renderPerformanceLoadChart(loadSeries, projection)}
               ${layout.phases.map((phase) => {
                 const label = `${phase.name} · ${dayLabel(phase.start_date)}–${dayLabel(phase.end_date)}`;
                 return `<div class="season-phase ${phaseTone(phase.name)}" data-season-phase aria-hidden="true" title="${escapeHtml(label)}" style="left:${phase.left}%; width:${phase.width}%"></div>`;
@@ -10496,7 +10710,8 @@ HTML_TEMPLATE = """<!doctype html>
             </div>
             ${full && races.length ? `<div class="season-event-track" aria-label="Race and event dates" style="height:${23 + 18 * Math.max(...races.map((event) => event.row))}px">${races.map((event) => `<button type="button" class="season-event-marker${event.tentative ? " tentative" : ""}" data-season-race-marker data-season-date="${escapeHtml(event.date)}" data-season-focus="race-${escapeHtml(event.date)}" aria-label="${escapeHtml(event.description)}" title="${escapeHtml(event.description)}" style="left:${event.left}%; --event-row:${event.row}"${event.selectable ? "" : " disabled"}></button>`).join("")}</div>` : ""}
             <p class="season-load-readout" id="${summaryId}" aria-live="polite">${full && selectedPhase ? `<span data-season-phase-readout>Phase: ${escapeHtml(selectedPhase)} · </span>` : ""}${escapeHtml(loadSummary)}${horizonWeeks.length ? ` · Select a week for details${full ? "; Enter opens Week" : ""}` : ""}</p>
-            ${full && selectedWeekLoad ? `<p class="season-week-budget-readout" title="${escapeHtml(selectedWeekLoad.target_min !== null ? selectedWeekLoad.target_note : "")}">Shown week · ${escapeHtml(seasonWeekLoadLabel(selectedWeekLoad))}</p>` : ""}
+            ${mode === "load" ? `<p class="season-projection-note" id="${projectionNoteId}">${escapeHtml(performanceProjectionNote(projection))}</p>` : ""}
+            ${full && mode === "load" && selectedWeekLoad ? `<p class="season-week-budget-readout" title="${escapeHtml(selectedWeekLoad.target_min !== null ? selectedWeekLoad.target_note : "")}">Shown week · ${escapeHtml(seasonWeekLoadLabel(selectedWeekLoad))}</p>` : ""}
             ${full && races.length ? `<details class="season-event-list"><summary>${races.reduce((count, event) => count + event.names.length, 0)} races and events in ${escapeHtml(year)}</summary><div>${races.map((event) => raceButton(event, "event")).join("")}</div></details>` : ""}
           </div>
         </section>`;
@@ -10710,6 +10925,9 @@ HTML_TEMPLATE = """<!doctype html>
       const scope = horizon.dataset.seasonJump === "calendar" ? "calendar" : "current";
       const currentHorizon = () => document.querySelector(`[data-season-jump="${scope}"]`);
       const focus = (key) => restoreSeasonFocus(currentHorizon(), key);
+      horizon.querySelectorAll("[data-season-chart]").forEach((button) => {
+        button.addEventListener("click", () => setSeasonChart(button.dataset.seasonChart, scope));
+      });
       const openWeek = () => {
         if (!DATA.weeks.some((week) => week.start_date === state.selectedWeekStart)) return;
         renderWeek();
@@ -11947,6 +12165,9 @@ def _planned_load_display(load: dict[str, Any], *, weekly: bool = False) -> dict
     if source == "coach_budget":
         origin = "Coach override" if load.get("budget_override_source") else "Coach budget"
         qualifier = f"{origin} · {load.get('budget_status') or 'provisional'}"
+    elif source == "coach_budget_allocation":
+        origin = "Coach day override" if load.get("budget_override_daily_source") else "Coach day target"
+        qualifier = f"{origin} · {load.get('budget_status') or 'provisional'}"
     elif weekly and value is None:
         qualifier = (
             "Budget needs review"
@@ -11962,7 +12183,7 @@ def _planned_load_display(load: dict[str, Any], *, weekly: bool = False) -> dict
         budget_ceiling_label=_tss_label(ceiling) if ceiling is not None and ceiling >= 0 else None,
         budget_review_required=load.get("coach_budget_state") in {"needs_review", "orphaned"},
         confidence="authored"
-        if source == "coach_budget"
+        if source in {"coach_budget", "coach_budget_allocation"}
         else "estimated"
         if load.get("estimated")
         else "high"
@@ -13566,10 +13787,159 @@ def _goals_summary(data_dir: Path) -> dict[str, str | None]:
 def _athlete_today(athlete: dict[str, Any], *, now: datetime | None = None) -> date:
     instant = now if now is not None else datetime.now(timezone.utc)
     try:
-        athlete_zone = ZoneInfo(str(athlete.get("timezone") or "UTC"))
+        name = athlete.get("timezone")
+        if not isinstance(name, str) or not name:
+            return instant.astimezone().date()
+        athlete_zone = ZoneInfo(name)
     except (ValueError, ZoneInfoNotFoundError):
-        athlete_zone = timezone.utc
+        # The localhost browser also uses its local date for incomplete profiles.
+        return instant.astimezone().date()
     return instant.astimezone(athlete_zone).date()
+
+
+def _apply_coach_daily_tss(
+    week_days: list[dict[str, Any]],
+    planned_week_load: dict[str, Any],
+    coach_budget: dict[str, Any] | None,
+    allocations: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply one complete, current full-day scenario without splicing its totals."""
+    if not isinstance(coach_budget, dict) or "daily_tss" not in coach_budget:
+        return {"state": "missing", "days": 0}
+    state = coach_budget.get("state")
+    if state != "current":
+        return {"state": state if state in {"needs_review", "orphaned"} else "missing", "days": 0}
+    key = (coach_budget.get("start_date"), coach_budget.get("end_date"))
+    expected = {str(item.get("date")) for item in coach_budget["daily_tss"]}
+    entries = {day["date"]: allocations.get(day["date"]) for day in week_days}
+    bounds = coach_budget.get("range") or {}
+    comparisons = (
+        (planned_week_load.get("estimated_tss"), coach_budget.get("target_tss")),
+        (planned_week_load.get("estimated_tss_min"), bounds.get("min")),
+        (planned_week_load.get("estimated_tss_max"), bounds.get("max")),
+    )
+    matches = all(
+        isinstance(left, (int, float))
+        and not isinstance(left, bool)
+        and isinstance(right, (int, float))
+        and not isinstance(right, bool)
+        and math.isfinite(left)
+        and math.isfinite(right)
+        and math.isclose(left, right, rel_tol=0, abs_tol=1e-6)
+        for left, right in comparisons
+    )
+    if (
+        not matches
+        or set(entries) != expected
+        or any(
+            not isinstance(item, dict)
+            or (item.get("budget_start_date"), item.get("budget_end_date")) != key
+            for item in entries.values()
+        )
+    ):
+        return {"state": "conflict", "days": 0}
+    for day in week_days:
+        item = entries[day["date"]]
+        prescribed = _prescribed_range(day.get("planned_load") or {})
+        if (
+            prescribed is not None
+            and not item.get("override_daily_source")
+            and not prescribed[0] - 1e-6 <= item["target_tss"] <= prescribed[1] + 1e-6
+        ):
+            return {"state": "conflict", "days": 0}
+    for day in week_days:
+        item = dict(entries[day["date"]])
+        original = day["planned_load"]
+        score = item["target_tss"]
+        note = (
+            item.get("rationale")
+            or item.get("budget_rationale")
+            or "Explicit full-day coaching target."
+        )
+        load = {
+            **original,
+            "estimated_tss": score,
+            "estimated_tss_min": score,
+            "estimated_tss_max": score,
+            "tss_source": "coach_budget_allocation",
+            "method": "coach_daily_allocation_v1",
+            "estimated": False,
+            "partial": False,
+            "assumed_if_min": None,
+            "assumed_if_max": None,
+            "budget_status": item["status"],
+            "budget_revision": item["budget_revision"],
+            "budget_override_daily_source": item["override_daily_source"],
+            "note": f"Full-day TSS planning target, not an executable workout. {note}",
+        }
+        day["source_planned_load"] = original
+        day["coach_tss_target"] = item
+        day["planned_load"] = _planned_load_display(load)
+    return {"state": "current", "days": len(entries)}
+
+
+def _day_projection_target(day: dict[str, Any]) -> dict[str, Any] | None:
+    authored = day.get("coach_tss_target")
+    if isinstance(authored, dict):
+        score = authored.get("target_tss")
+        if (
+            isinstance(score, (int, float))
+            and not isinstance(score, bool)
+            and 0 <= score <= MAX_DAILY_TSS
+            and math.isfinite(score)
+            and authored.get("tss_source") == "coach_budget_allocation"
+            and authored.get("status") in {"provisional", "confirmed"}
+        ):
+            return {
+                "date": day["date"],
+                "target_tss": score,
+                "tss_source": "coach_budget_allocation",
+                "status": authored["status"],
+            }
+        return None
+    if day.get("structured_workouts") and not day.get("structured_is_primary"):
+        # An independent extra workout is not automatically part of the prose total.
+        return None
+    load = day.get("planned_load") or {}
+    if _prescribed_range(load) is None:
+        return None
+    return {
+        "date": day["date"],
+        "target_tss": load["estimated_tss"],
+        "tss_source": load["tss_source"],
+        "status": "prescribed",
+    }
+
+
+def _dashboard_load_projection(
+    training_load: dict[str, Any], days: list[dict[str, Any]], *, as_of: date
+) -> dict[str, Any]:
+    limit = as_of + timedelta(days=MAX_PROJECTION_DAYS)
+    grouped: dict[str, list[dict[str, Any] | None]] = {}
+    last = as_of
+    for day in days:
+        try:
+            stamp = date.fromisoformat(day["date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not as_of < stamp <= limit:
+            continue
+        last = max(last, stamp)
+        grouped.setdefault(stamp.isoformat(), []).append(_day_projection_target(day))
+    targets = []
+    conflicts = []
+    for stamp, candidates in sorted(grouped.items()):
+        if candidates[0] is not None and all(item == candidates[0] for item in candidates):
+            targets.append(candidates[0])
+        elif len(candidates) > 1 and any(item is not None for item in candidates):
+            conflicts.append(stamp)
+    try:
+        result = build_training_load_projection(training_load, targets, as_of=as_of, end=last)
+    except ValueError:
+        result = build_training_load_projection(training_load, [], as_of=as_of, end=last)
+        result["summary"].update(stop_reason="invalid_daily_targets")
+    result["target_summary"] = {"eligible_days": len(targets), "conflicting_dates": conflicts}
+    return result
 
 
 def _build_payload(
@@ -13598,6 +13968,7 @@ def _build_payload(
         training_load = build_training_load([], as_of=model_date)
         training_load["unavailable_reason"] = "invalid_daily_history"
     coach_budgets = load_tss_budgets(data_dir)
+    daily_allocations = coach_daily_tss(coach_budgets)
     structured_by_date = _structured_dashboard_workouts(data_dir, athlete)
     weekly_rows = list(weekly_rows) if isinstance(weekly_rows, list) else []
     covered_ranges = [
@@ -13765,6 +14136,9 @@ def _build_payload(
             tss_target=plan.get("tss_target"),
             coach_budget=coach_budget,
         )
+        daily_allocation = _apply_coach_daily_tss(
+            week_days, planned_week_load, coach_budget, daily_allocations
+        )
         display_status = _week_display_status(
             row, week_days, today=model_date, planned_load=planned_week_load
         )
@@ -13798,6 +14172,7 @@ def _build_payload(
             if totals.get("distance_m") is not None
             else None,
             "planned_load": planned_week_load,
+            "daily_tss_allocation": daily_allocation,
             "coach_budget": {
                 key: coach_budget[key]
                 for key in (
@@ -13810,6 +14185,8 @@ def _build_payload(
                     "conditions",
                     "revision",
                     "override_source",
+                    "override_daily_source",
+                    "daily_tss",
                 )
                 if key in coach_budget
             }
@@ -13835,6 +14212,7 @@ def _build_payload(
         "generatedAt": generated_at.isoformat(),
         "athlete": athlete if isinstance(athlete, dict) else {},
         "trainingLoad": training_load,
+        "trainingLoadProjection": _dashboard_load_projection(training_load, days, as_of=model_date),
         "postSyncSummary": post_sync_summary,
         "phases": phases if isinstance(phases, list) else [],
         "events": events if isinstance(events, list) else [],

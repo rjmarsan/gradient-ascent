@@ -17,7 +17,7 @@ class SeasonViewTest(unittest.TestCase):
         ]
         script = (
             f"const DATA={json.dumps(data or {})};\n"
-            "const state={selectedDate:'2026-08-15',calendarYear:'2026',selectedWeekStart:'2026-08-10'};\n"
+            "const state={selectedDate:'2026-08-15',calendarYear:'2026',selectedWeekStart:'2026-08-10',seasonChart:'load'};\n"
             "const TODAY='2026-08-17';\n"
             "const dayLabel=value=>value;\n"
             "const utcDate=value=>new Date(value+'T00:00:00Z');\n"

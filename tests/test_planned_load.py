@@ -10,6 +10,33 @@ from gradient_ascent.planned_load import (
 
 
 class PlannedLoadTest(unittest.TestCase):
+    def test_explicit_targets_preserve_authoritative_fractional_precision(self) -> None:
+        daily = day_planned_load(tss_min=75.25, tss_max=75.25)
+        weekly = week_planned_load([], tss_target={"min": 75.25, "max": 75.25})
+        coach = week_planned_load(
+            [],
+            coach_budget={
+                "state": "current",
+                "target_tss": 75.25,
+                "range": {"min": 75.125, "max": 75.375},
+            },
+        )
+        for load in (daily, weekly):
+            self.assertEqual(
+                tuple(
+                    load[key] for key in ("estimated_tss_min", "estimated_tss", "estimated_tss_max")
+                ),
+                (75.25, 75.25, 75.25),
+            )
+        self.assertEqual(
+            tuple(
+                coach[key] for key in ("estimated_tss_min", "estimated_tss", "estimated_tss_max")
+            ),
+            (75.125, 75.25, 75.375),
+        )
+        self.assertEqual(week_planned_load([daily])["estimated_tss"], 75.25)
+        self.assertEqual(day_planned_load(is_rest=True)["estimated_tss"], 0)
+
     def test_explicit_source_targets_win_and_zero_is_real(self) -> None:
         load = day_planned_load(
             hours_min=1, hours_max=2, tss_min=0, tss_max=0, intensity="threshold"

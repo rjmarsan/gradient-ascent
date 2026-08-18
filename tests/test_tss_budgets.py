@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -40,7 +41,249 @@ def write_draft(path, entries):
     return path
 
 
+def allocation(week=WEEK, values=(0, 75, 50, 0, 75, 100, 0)):
+    first = date.fromisoformat(week["start_date"])
+    return [
+        {"date": (first + timedelta(days=index)).isoformat(), "target_tss": value}
+        for index, value in enumerate(values)
+    ]
+
+
+def workout(identifier, day, *, watts=250, unit="watts"):
+    return {
+        "id": identifier,
+        "date": day,
+        "name": "Synthetic prescribed session",
+        "sport": "cycling",
+        "steps": [
+            {
+                "name": "Work",
+                "duration_s": 1800,
+                "intensity": "active",
+                "target": {"type": "power", "unit": unit, "low": watts, "high": watts},
+            }
+        ],
+    }
+
+
 class TSSBudgetsTest(unittest.TestCase):
+    def test_daily_allocation_revision_preservation_clear_and_provenance(self):
+        from gradient_ascent.tss_budgets import (
+            coach_daily_tss,
+            load_tss_budgets,
+            update_tss_budgets,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            draft = Path(tmp) / "draft.json"
+            key = (WEEK["start_date"], WEEK["end_date"])
+            days = allocation()
+            days[0]["rationale"] = "Explicit rest or recovery branch."
+            update_tss_budgets(
+                root, write_draft(draft, [draft_entry(daily_tss=list(reversed(days)))])
+            )
+            loaded = load_tss_budgets(root)
+            self.assertEqual(loaded[key]["daily_tss"], days)
+            flattened = coach_daily_tss(loaded)
+            self.assertEqual(len(flattened), 7)
+            first = flattened[WEEK["start_date"]]
+            self.assertEqual(
+                (first["target_tss"], first["tss_source"], first["status"]),
+                (0, "coach_budget_allocation", "provisional"),
+            )
+            self.assertEqual(first["rationale"], days[0]["rationale"])
+            self.assertEqual(first["budget_revision"], 1)
+            self.assertFalse(first["override_daily_source"])
+            original = (root / "plan/tss_budgets.json").read_bytes()
+            self.assertEqual(
+                update_tss_budgets(root, write_draft(draft, [draft_entry()]))["unchanged"], 1
+            )
+            self.assertEqual((root / "plan/tss_budgets.json").read_bytes(), original)
+            with self.assertRaisesRegex(ValueError, "daily_tss"):
+                update_tss_budgets(root, write_draft(draft, [draft_entry(target_tss=310)]))
+            self.assertEqual((root / "plan/tss_budgets.json").read_bytes(), original)
+            update_tss_budgets(
+                root, write_draft(draft, [draft_entry(target_tss=310, daily_tss=None)])
+            )
+            cleared = load_tss_budgets(root)[key]
+            self.assertNotIn("daily_tss", cleared)
+            self.assertEqual(cleared["revision"], 2)
+            self.assertEqual(coach_daily_tss(load_tss_budgets(root)), {})
+
+    def test_daily_allocation_requires_complete_exact_dates_and_central_sum(self):
+        from gradient_ascent.tss_budgets import update_tss_budgets
+
+        days = allocation()
+        invalid = [
+            [],
+            days[:-1],
+            days + [days[-1]],
+            [days[0], days[0], *days[2:]],
+            [{**days[0], "date": "2026-08-31"}, *days[1:]],
+        ]
+        invalid += [
+            [{**days[0], "target_tss": value}, *days[1:]]
+            for value in (True, -1, float("nan"), float("inf"), 10**400, 21601, 1)
+        ]
+        invalid += [
+            [{**days[0], "unknown": 1}, *days[1:]],
+            [{**days[0], "rationale": ""}, *days[1:]],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            draft = Path(tmp) / "draft.json"
+            for value in invalid:
+                with self.subTest(value_type=type(value).__name__):
+                    with self.assertRaises(ValueError):
+                        update_tss_budgets(root, write_draft(draft, [draft_entry(daily_tss=value)]))
+                    self.assertFalse((root / "plan/tss_budgets.json").exists())
+            with self.assertRaises(ValueError):
+                update_tss_budgets(root, write_draft(draft, [draft_entry(override_daily_source=1)]))
+            short = {**WEEK, "end_date": "2026-09-02"}
+            write_json(root / "plan/weeks.json", [short])
+            update_tss_budgets(
+                root,
+                write_draft(
+                    draft,
+                    [draft_entry(short, target_tss=0.3, daily_tss=allocation(short, (0.1, 0.2)))],
+                ),
+            )
+
+    def test_daily_source_conflict_has_separate_explicit_override(self):
+        from gradient_ascent.tss_budgets import (
+            coach_daily_tss,
+            load_tss_budgets,
+            update_tss_budgets,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            write_json(
+                root / "plan/weeks.json",
+                [{**WEEK, "day_loads": {"Tue": {"tss_min": 20, "tss_max": 40}}}, SECOND],
+            )
+            draft = Path(tmp) / "draft.json"
+            for weekly_override in (False, True):
+                with self.assertRaisesRegex(ValueError, "override_daily_source"):
+                    update_tss_budgets(
+                        root,
+                        write_draft(
+                            draft,
+                            [draft_entry(daily_tss=allocation(), override_source=weekly_override)],
+                        ),
+                    )
+            update_tss_budgets(
+                root,
+                write_draft(
+                    draft, [draft_entry(daily_tss=allocation(), override_daily_source=True)]
+                ),
+            )
+            self.assertTrue(
+                coach_daily_tss(load_tss_budgets(root))[WEEK["start_date"]]["override_daily_source"]
+            )
+
+    def test_primary_structured_targets_are_checked_without_prose_doublecount(self):
+        from gradient_ascent.tss_budgets import update_tss_budgets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            draft = Path(tmp) / "draft.json"
+            write_json(root / "plan/weeks.json", [{**WEEK, "days": {}}, SECOND])
+            write_json(
+                root / "plan/workouts.json",
+                {
+                    "version": 1,
+                    "workouts": [
+                        workout("first", WEEK["start_date"]),
+                        workout("second", WEEK["start_date"]),
+                    ],
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "override_daily_source"):
+                update_tss_budgets(root, write_draft(draft, [draft_entry(daily_tss=allocation())]))
+            update_tss_budgets(
+                root,
+                write_draft(
+                    draft, [draft_entry(daily_tss=allocation(values=(100, 0, 50, 0, 50, 100, 0)))]
+                ),
+            )
+            write_json(root / "plan/tss_budgets.json", {"version": 1, "budgets": []})
+            write_json(root / "plan/weeks.json", [WEEK, SECOND])
+            update_tss_budgets(root, write_draft(draft, [draft_entry(daily_tss=allocation())]))
+
+    def test_explicit_prose_and_rest_use_the_dashboard_prescription_rules(self):
+        from gradient_ascent.tss_budgets import update_tss_budgets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            draft = Path(tmp) / "draft.json"
+            days = allocation(values=(100, 0, 50, 0, 50, 100, 0))
+            for text in ("Rest", "Ride 75 TSS"):
+                with self.subTest(text=text):
+                    write_json(root / "plan/tss_budgets.json", {"version": 1, "budgets": []})
+                    before = (root / "plan/tss_budgets.json").read_bytes()
+                    write_json(root / "plan/weeks.json", [{**WEEK, "days": {"Tue": text}}, SECOND])
+                    with self.assertRaisesRegex(ValueError, "override_daily_source"):
+                        update_tss_budgets(root, write_draft(draft, [draft_entry(daily_tss=days)]))
+                    self.assertEqual((root / "plan/tss_budgets.json").read_bytes(), before)
+            write_json(root / "plan/tss_budgets.json", {"version": 1, "budgets": []})
+            update_tss_budgets(
+                root, write_draft(draft, [draft_entry(daily_tss=days, override_daily_source=True)])
+            )
+            write_json(root / "plan/tss_budgets.json", {"version": 1, "budgets": []})
+            for text in ("Cancelled ride 75 TSS", "Endurance ride 2 h"):
+                with self.subTest(text=text):
+                    write_json(root / "plan/weeks.json", [{**WEEK, "days": {"Tue": text}}, SECOND])
+                    update_tss_budgets(root, write_draft(draft, [draft_entry(daily_tss=days)]))
+                    write_json(root / "plan/tss_budgets.json", {"version": 1, "budgets": []})
+
+    def test_exact_fractional_source_targets_need_no_daily_override(self):
+        from gradient_ascent.tss_budgets import update_tss_budgets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            draft = Path(tmp) / "draft.json"
+            days = allocation(values=(75.25, 0, 0, 0, 0, 0, 0))
+            for source in (
+                {"days": {"Tue": "Ride 75.25 TSS"}},
+                {"day_loads": {"Tue": {"tss_min": 75.25, "tss_max": 75.25}}},
+            ):
+                with self.subTest(source=list(source)):
+                    write_json(root / "plan/tss_budgets.json", {"version": 1, "budgets": []})
+                    write_json(
+                        root / "plan/weeks.json",
+                        [{**WEEK, **source, "tss_target": {"min": 75.25, "max": 75.25}}, SECOND],
+                    )
+                    result = update_tss_budgets(
+                        root, write_draft(draft, [draft_entry(target_tss=75.25, daily_tss=days)])
+                    )
+                    self.assertEqual(result["created"], 1)
+
+    def test_stale_and_orphaned_allocations_are_never_returned(self):
+        from gradient_ascent.tss_budgets import (
+            coach_daily_tss,
+            load_tss_budgets,
+            update_tss_budgets,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            setup(root)
+            update_tss_budgets(
+                root, write_draft(Path(tmp) / "draft.json", [draft_entry(daily_tss=allocation())])
+            )
+            write_json(root / "plan/weeks.json", [{**WEEK, "notes": "Changed"}, SECOND])
+            self.assertEqual(coach_daily_tss(load_tss_budgets(root)), {})
+            write_json(root / "plan/weeks.json", [SECOND])
+            self.assertEqual(coach_daily_tss(load_tss_budgets(root)), {})
+
     def test_author_merge_revision_replace_and_private_storage(self):
         from gradient_ascent.tss_budgets import (
             load_tss_budgets,

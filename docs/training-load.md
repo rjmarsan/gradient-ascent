@@ -63,9 +63,18 @@ original-file retention is limited to 64 MiB per file and does not reduce the
 existing upload limit. Use `gradient-ascent refresh --local-only` for an explicitly
 offline rebuild.
 
-## CTL and ATL recorded-load trends
+## Season chart: Plan or CTL · ATL
 
-The season chart uses recorded daily TSS to model longer-term Chronic Training Load
+The season chart opens in **Plan**: weekly source targets, coach-authored budgets,
+or complete prescribed-session totals, compared with recorded weekly TSS. Its
+ranges are intentional planning ranges, not statistical confidence intervals or
+measured fitness. Switch to **CTL · ATL** to see recorded daily load trends and,
+when explicit future daily targets exist, a separately labeled conditional
+projection. The two views use different units: weekly TSS versus TSS/day.
+
+### Recorded CTL and ATL
+
+The CTL · ATL view uses recorded daily TSS to model longer-term Chronic Training Load
 (CTL) and shorter-term Acute Training Load (ATL). The method
 `ctl_atl_daily_ewma_v1` follows the current TrainingPeaks Help Center formulas:
 
@@ -99,9 +108,26 @@ a known-incomplete-history warning even after those days leave the recent 7- or
 
 The model's `through_date` identifies the last build date. Today's value can be a
 recorded-so-far value, and an older open dashboard does not gain new observations
-just because the clock advances. Refresh to rebuild. There is no future CTL/ATL
-projection in this version: weekly coach budgets are not divided across days, and
-planned sessions are not counted as completed training.
+just because the clock advances. Refresh to rebuild. Planned sessions never become
+completed training merely because they appear on the calendar.
+
+### Conditional future projection
+
+`ctl_atl_daily_projection_v1` uses the same 42- and seven-day recurrence, beginning
+with today's valid recorded CTL/ATL state. **It starts tomorrow; the remainder of
+today's plan is excluded.** A full-day target is never added to today's recorded
+load. If the recorded model is stale or has no supported starting score, a
+projection is unavailable until that is resolved.
+
+Each projected day needs an explicit imported daily TSS target, an explicit rest
+day, a fully specified structured-workout calculation, or a current coach-authored
+daily allocation. Genuine zero is valid. Source conflicts must be resolved rather
+than blended or counted twice. The projection stops at the first unspecified day;
+it does not jump to a later known workout or spread a weekly budget across the gap.
+The recorded model's incomplete-history and zero-seed qualifications still apply,
+and a scenario that depends on a provisional target remains provisional. These
+curves describe what the stated plan would imply, not what the rider has done or
+a promise of future performance.
 
 ## Planned load
 
@@ -156,7 +182,8 @@ A draft has `{"version": 1, "budgets": [...]}`. Each entry names the exact
 `start_date` and `end_date` of an existing plan week and supplies `target_tss` and
 a meaningful `rationale`. Optional fields are `range: {"min": ..., "max": ...}`,
 `ceiling_tss`, `status` (`provisional` or `confirmed`), `conditions` (a list of
-strings), and `override_source` (a boolean). Omit the range for a single target.
+strings), `override_source` (a boolean), and the daily allocation described below.
+Omit the range for a single target.
 The default status is `provisional`, and the default override is `false`. A range
 must contain its target; a ceiling must cover the entire range. Numbers must be
 finite JSON numbers from 0–151,200, not booleans or numeric strings. That upper bound
@@ -187,6 +214,33 @@ The application records revisions and authorship time. Do not invent or copy tho
 stored metadata fields into a new draft.
 Status reports aggregate counts for total, current, review-needed, orphaned,
 provisional, and confirmed budgets without printing their private rationale.
+
+#### Optional daily allocation
+
+A budget may include `daily_tss`, a complete list of `{date, target_tss}` entries
+for every date in its source week. Each day may also have a nonblank `rationale` of
+at most 1,024 UTF-8 bytes. Daily targets are finite JSON numbers from 0–21,600;
+their sum must equal the weekly **central target**, within a small numeric tolerance.
+Include rest days explicitly as zero. A range or ceiling is not automatically
+allocated. The [synthetic budget example](../examples/calendar/sample-tss-budgets.json)
+shows the complete shape.
+
+Daily allocations are deliberate full-day planning decisions, including any
+provisional race or recovery assumptions. They are not FIT workouts, interval
+durations, or device instructions. Existing explicit daily source prescriptions,
+including rest, take priority unless the rider deliberately sets
+`override_daily_source: true`. That permission is separate from `override_source`,
+which concerns the weekly source target. A conflicting allocation is rejected
+without the corresponding explicit override.
+
+Use the existing `update-tss-budgets --file DRAFT` command to save allocations.
+Omitting `daily_tss` preserves an existing allocation if the weekly central target
+has not changed; use `daily_tss: null` to clear it explicitly. Changing the central
+target requires a replacement allocation or an explicit clear. The allocation
+shares its budget's revision, provisional/confirmed status, and changed-plan
+review requirements. Stale or orphaned allocations are not used for projection.
+Use `tss-budget-status --daily` to inspect current dated allocations and their
+provenance; this is opt-in, while ordinary status remains aggregate-only.
 
 ### Fully prescribed sessions
 

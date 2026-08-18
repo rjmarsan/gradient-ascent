@@ -130,15 +130,25 @@ def _load(
     tss_value: float | None = None,
     note: str = "No supported planned load is recorded.",
 ) -> dict[str, Any]:
+    exact = tss_source in {"source_target", "explicit_rest", "coach_budget"} or (
+        tss_source == "complete_prescribed_sum" and not estimated
+    )
+
+    def tss_number(value: float) -> float:
+        # Source prescriptions are authoritative, not presentation-rounded
+        # estimates. In particular, allocation validation must compare the
+        # original target rather than a one-decimal display approximation.
+        return value if exact else round(value, 1)
+
     return {
         "hours": round(_mid(hours), 4) if hours is not None else None,
         "hours_min": round(hours[0], 4) if hours is not None else None,
         "hours_max": round(hours[1], 4) if hours is not None else None,
-        "estimated_tss": round(tss_value if tss_value is not None else _mid(tss), 1)
+        "estimated_tss": tss_number(tss_value if tss_value is not None else _mid(tss))
         if tss is not None
         else None,
-        "estimated_tss_min": round(tss[0], 1) if tss is not None else None,
-        "estimated_tss_max": round(tss[1], 1) if tss is not None else None,
+        "estimated_tss_min": tss_number(tss[0]) if tss is not None else None,
+        "estimated_tss_max": tss_number(tss[1]) if tss is not None else None,
         "duration_source": duration_source if hours is not None else "missing",
         "tss_source": tss_source if tss is not None else "missing",
         "method": method if tss is not None else "missing",

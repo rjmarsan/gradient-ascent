@@ -224,13 +224,16 @@ power coverage and rides without load are identified, and unsupported load stays
 missing. Local-only refresh can repair older recordings from retained,
 digest-verified originals without contacting a provider. FIT session scores and
 timer duration are preserved, and heart-rate gaps do not discard valid power.
-The season chart shows CTL and ATL: longer- and shorter-term weighted averages of
-recorded daily TSS. These are modeled load trends, not direct fitness measurements;
-limited history and missing scores remain disclosed. The chart stops at its last
-build date and does not spread weekly budgets into imagined future rides. Week
-totals separately compare recorded load with explicit source or coach budgets, or
-a complete sum of prescribed-session targets. Missing budgets stay missing;
-available hours and rough session estimates do not silently become a weekly target.
+The season chart opens in **Plan**, showing data-backed weekly TSS budgets and
+recorded load. Switch to **CTL · ATL** for longer- and shorter-term modeled load
+trends. These are not direct fitness measurements; limited history and missing
+scores remain disclosed. A separate conditional projection starts tomorrow from
+today's recorded state and stops at the first day without an explicit TSS target.
+The remainder of today's plan is excluded. Coaches can author complete daily
+allocations within a weekly budget; the app never divides that budget across days
+automatically. Week totals preserve source or coach budgets and complete
+prescribed-session targets. Missing budgets stay missing; available hours and rough
+session estimates do not silently become a weekly target.
 Recorded-day cards show actual stats. Past weeks that never had a budget are labeled
 by their recorded evidence instead of being treated as overdue planning work.
 Generated ride titles can use a planned-workout name for display without claiming

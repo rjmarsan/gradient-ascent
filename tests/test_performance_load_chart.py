@@ -59,7 +59,10 @@ class PerformanceLoadPayloadTest(unittest.TestCase):
         )
         self.assertEqual(
             training_center._athlete_today({"timezone": "not/a-zone"}, now=instant),
-            date(2026, 1, 2),
+            instant.astimezone().date(),
+        )
+        self.assertEqual(
+            training_center._athlete_today({}, now=instant), instant.astimezone().date()
         )
 
     def test_payload_uses_all_recorded_daily_history_not_weekly_budgets(self):

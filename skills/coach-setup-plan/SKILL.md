@@ -78,6 +78,27 @@ current fingerprint. See the
 and [synthetic budget example](https://github.com/rjmarsan/gradient-ascent/blob/main/examples/calendar/sample-tss-budgets.json)
 for the draft schema and precedence rules. Example numbers are not a prescription.
 
+When the rider asks for a future CTL/ATL scenario, first inspect any current daily
+allocations with `"$COACH_CLI" tss-budget-status --daily`. If a week still needs
+allocation, make explicit coaching decisions for every date, including rest as zero
+and any provisional event assumptions. Store those full-day targets in the budget's
+optional `daily_tss` list; the sum must equal its weekly central target. Preserve
+existing daily source prescriptions unless the rider deliberately approves the
+separate `override_daily_source` flag. A weekly source override does not authorize
+changing a daily prescription.
+
+Save through the same validated budget command. Omitting `daily_tss` preserves an
+existing allocation when the central target is unchanged; use `daily_tss: null`
+to clear it, or supply a complete replacement when changing the target. Do not
+divide a weekly total evenly, infer exact targets from hours, or invent allocations
+merely to extend a chart. Daily targets are not executable device workouts.
+
+Explain the Training Center's **Plan / CTL · ATL** switcher accurately: Plan is the
+default weekly-budget comparison; CTL/ATL is modeled load. Its conditional future
+curve starts tomorrow from today's recorded state, excludes the remainder of today's
+plan, and stops at the first missing daily target. Report provisional decisions,
+source conflicts, and missing dates instead of claiming an unbroken forecast.
+
 ## Optional device workouts and schedule export
 
 Offer this only when the rider asks for a downloadable schedule or executable device

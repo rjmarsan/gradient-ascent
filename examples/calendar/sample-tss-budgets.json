@@ -16,7 +16,17 @@
         "Review recovery and the event decision before confirming.",
         "Do not add riding merely to reach the target."
       ],
-      "override_source": false
+      "override_source": false,
+      "override_daily_source": false,
+      "daily_tss": [
+        {"date": "2026-04-06", "target_tss": 0, "rationale": "Choose the explicit rest option for this synthetic scenario."},
+        {"date": "2026-04-07", "target_tss": 60},
+        {"date": "2026-04-08", "target_tss": 45},
+        {"date": "2026-04-09", "target_tss": 65},
+        {"date": "2026-04-10", "target_tss": 25},
+        {"date": "2026-04-11", "target_tss": 85},
+        {"date": "2026-04-12", "target_tss": 80, "rationale": "Provisional race-day load in the synthetic format example, not a device-workout prescription."}
+      ]
     }
   ]
 }

@@ -1,3 +1,4 @@
+import copy
 import json
 import shutil
 import subprocess
@@ -28,6 +29,59 @@ class SeasonLoadChartTest(unittest.TestCase):
             timeout=15,
         )
         return json.loads(result.stdout)
+
+    def test_unfinished_week_is_a_separate_point_not_a_completed_week_cliff(self):
+        weeks = [
+            {
+                "start_date": "2026-01-05",
+                "end_date": "2026-01-11",
+                "totals": {"estimated_tss": 600},
+            },
+            {
+                "start_date": "2026-01-12",
+                "end_date": "2026-01-18",
+                "totals": {"estimated_tss": 15.5},
+                "tss_partial": True,
+                "tss_qualifier": "Calculated · 1 ride without load",
+                "planned_load": {"estimated_tss": 400, "tss_source": "coach_budget"},
+            },
+            {
+                "start_date": "2026-01-19",
+                "end_date": "2026-01-25",
+                "totals": {"estimated_tss": 999},
+            },
+        ]
+        before = copy.deepcopy(weeks)
+        series, markup = self.run_chart(
+            "(()=>{const s=seasonLoadSeries(weeks,horizon,'2026-01-12');return [s,renderSeasonPlanChart(s)]})()",
+            weeks=weeks,
+        )
+        self.assertEqual(
+            [[r["recorded_tss"] for r in run] for run in series["recorded_runs"]], [[600]]
+        )
+        self.assertEqual([r["recorded_tss"] for r in series["recorded_to_date"]], [15.5])
+        self.assertEqual(series["recorded_to_date"][0]["recorded_position"], 20)
+        self.assertEqual(series["rows"][1]["target_value"], 400)
+        self.assertIsNone(series["rows"][2]["recorded_tss"])
+        self.assertIn('class="season-recorded-current"', markup)
+        self.assertIn('cx="200"', markup)
+        self.assertIn("Recorded 16 TSS so far", markup)
+        self.assertIn("1 ride without load", markup)
+        self.assertEqual(weeks, before)
+
+        for value, expected in ((0, [0]), (None, [])):
+            weeks[1]["totals"]["estimated_tss"] = value
+            result = self.run_chart("seasonLoadSeries(weeks,horizon,'2026-01-18')", weeks=weeks)
+            self.assertEqual([r["recorded_tss"] for r in result["recorded_to_date"]], expected)
+        weeks[1]["totals"]["estimated_tss"] = 15.5
+        completed = self.run_chart("seasonLoadSeries(weeks,horizon,'2026-01-19')", weeks=weeks[:2])
+        self.assertEqual(completed["recorded_to_date"], [])
+        self.assertEqual([r["recorded_tss"] for r in completed["recorded_runs"][0]], [600, 15.5])
+        clipped = self.run_chart(
+            "seasonLoadSeries(weeks,{start_date:'2026-01-12',end_date:'2026-01-15'},'2026-01-18')",
+            weeks=weeks,
+        )
+        self.assertEqual(clipped["recorded_to_date"], [])
 
     def test_series_uses_real_dates_and_preserves_missing_zero_and_future(self):
         weeks = [

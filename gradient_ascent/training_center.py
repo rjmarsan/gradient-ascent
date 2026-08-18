@@ -6599,6 +6599,7 @@ HTML_TEMPLATE = """<!doctype html>
     .season-chart-key .planned-key i { border-color: #7d9b7a; }
     .season-chart-key .range-key i { height: 6px; border: 1px solid #aabd9f; background: #d3dfcd; }
     .season-chart-key .recorded-key i { height: 6px; border: 1px solid #527966; background: #527966; }
+    .season-chart-key .current-key i { width: 7px; height: 7px; border: 1.5px solid #527966; border-radius: 50%; background: #fffef8; }
     .season-chart-key .event-key i { width: 5px; height: 9px; border: 0; border-left: 1px solid #a87861; }
 
     .season-chart-switcher {
@@ -6712,6 +6713,7 @@ HTML_TEMPLATE = """<!doctype html>
     .season-target-line { fill: none; stroke: #7b9c78; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
     .season-recorded-area { fill: #648774; fill-opacity: .55; }
     .season-recorded-line { fill: none; stroke: #527966; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .season-recorded-current { fill: #fffef8; stroke: #527966; stroke-width: 2; vector-effect: non-scaling-stroke; }
     .season-day-hit, .season-week-hit { fill: transparent; }
     .season-chart-event-line { stroke: #a87861; stroke-opacity: .42; stroke-width: 1; vector-effect: non-scaling-stroke; }
     .season-chart-event-cap { stroke: #a87861; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
@@ -10388,7 +10390,7 @@ HTML_TEMPLATE = """<!doctype html>
       const spanEnd = dateTime(layout?.end_date) + dayMs;
       const todayTime = dateTime(today);
       if (!Number.isFinite(spanStart) || !Number.isFinite(spanEnd) || spanEnd <= spanStart) {
-        return { rows: [], target_runs: [], trajectory_runs: [], recorded_runs: [], max_tss: 100 };
+        return { rows: [], target_runs: [], trajectory_runs: [], recorded_runs: [], recorded_to_date: [], max_tss: 100 };
       }
       const percent = (time) => 100 * (time - spanStart) / (spanEnd - spanStart);
       const rows = (Array.isArray(weeks) ? weeks : []).map((week) => {
@@ -10425,6 +10427,7 @@ HTML_TEMPLATE = """<!doctype html>
           target_ceiling: numeric(plan.budget_ceiling_tss),
           target_review_required: plan.budget_review_required === true,
           recorded_tss: future ? null : actual,
+          recorded_position: !future && start <= todayTime && todayTime < end && spanStart <= todayTime && todayTime < spanEnd ? percent(todayTime) : null,
           recorded_qualifier: String(week.tss_qualifier || ""),
           recorded_partial: week.tss_partial === true,
           to_date: Number.isFinite(todayTime) && start <= todayTime && todayTime < end,
@@ -10432,11 +10435,11 @@ HTML_TEMPLATE = """<!doctype html>
           future
         };
       }).filter(Boolean).sort((left, right) => left.start_ms - right.start_ms || left.end_ms - right.end_ms);
-      const runs = (key) => {
+      const runs = (key, eligible = () => true) => {
         const result = [];
         let current = [];
         for (const row of rows) {
-          if (row[key] === null) {
+          if (row[key] === null || !eligible(row)) {
             if (current.length) result.push(current);
             current = [];
             continue;
@@ -10454,7 +10457,8 @@ HTML_TEMPLATE = """<!doctype html>
       const tick = maximum <= 200 ? 50 : maximum <= 1000 ? 100 : maximum <= 2500 ? 250 : 500;
       const ceiling = Math.ceil(maximum / tick) * tick;
       return {
-        rows, target_runs: runs("target_min"), trajectory_runs: runs("target_value"), recorded_runs: runs("recorded_tss"),
+        rows, target_runs: runs("target_min"), trajectory_runs: runs("target_value"), recorded_runs: runs("recorded_tss", (row) => row.completed),
+        recorded_to_date: rows.filter((row) => row.to_date && row.recorded_tss !== null && row.recorded_position !== null),
         max_tss: Math.max(100, Number.isFinite(ceiling) ? ceiling : maximum)
       };
     }
@@ -10493,7 +10497,7 @@ HTML_TEMPLATE = """<!doctype html>
         provisional: budgets.filter((row) => row.target_status === "provisional").length,
         missing: series.rows.length - planned.length, recorded: recorded.length,
         incomplete: recorded.filter((row) => row.recorded_partial).length,
-        note: "Weekly summaries retain coach budgets, source targets, complete prescribed-session totals, and any intentional target range. Missing budgets are not invented. TSS is training load, not measured fitness."
+        note: "Weekly summaries retain coach budgets, source targets, complete prescribed-session totals, and any intentional target range. The filled recorded history contains completed weeks; this week's subtotal is a separate point. Missing budgets are not invented. TSS is training load, not measured fitness."
       };
     }
 
@@ -10535,13 +10539,15 @@ HTML_TEMPLATE = """<!doctype html>
         const values = points(run, "recorded_tss");
         return `<path class="season-recorded-area" d="M${values[0][0]},${baseline} ${path(values).replace(/^M/, "L")} L${values.at(-1)[0]},${baseline} Z"></path><path class="season-recorded-line" d="${path(values)}"></path>`;
       }).join("");
-      const hasData = series.target_runs.length || series.recorded_runs.length;
+      const current = (series.recorded_to_date || []).map((row) => `<circle class="season-recorded-current" cx="${x(row.recorded_position)}" cy="${y(row.recorded_tss)}" r="3.5"><title>${escapeHtml(`Current week · ${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}`)}</title></circle>`).join("");
+      const hasData = series.target_runs.length || series.recorded_runs.length || current;
       return `<svg class="season-load-chart" viewBox="0 0 ${width} 112" preserveAspectRatio="none" aria-hidden="true">
         <title>Weekly TSS: planned budget, intentional range, and recorded load</title>
         <line class="season-chart-grid" x1="0" x2="${width}" y1="${baseline}" y2="${baseline}"></line>
         <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_tss / 2)}" y2="${y(series.max_tss / 2)}"></line>
         ${plannedArea}${targets}${recorded}${trajectory}
         ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}${row.target_note && row.target_min !== null ? ` · ${row.target_note}` : ""} · Whole-week totals`)}</title></rect>`).join("")}
+        ${current}
         ${renderSeasonChartEvents(events)}
       </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_tss)} TSS/week</span><span>0 TSS/week</span></div>` : '<span class="season-chart-empty">No weekly TSS data</span>'}`;
     }
@@ -10940,6 +10946,7 @@ HTML_TEMPLATE = """<!doctype html>
       const chartKey = mode === "plan"
         ? '<strong>Weekly TSS</strong><span class="planned-key"><i aria-hidden="true"></i>Planned</span><span class="range-key"><i aria-hidden="true"></i>Intentional range</span><span class="recorded-key"><i aria-hidden="true"></i>Recorded</span>'
         : '<strong>Training load</strong><span class="ctl-key"><i aria-hidden="true"></i>CTL · 42-day</span><span class="atl-key"><i aria-hidden="true"></i>ATL · 7-day</span><span class="projected-key"><i aria-hidden="true"></i>Conditional projection</span>';
+      const currentWeekKey = mode === "plan" ? weeklySeries.recorded_to_date.map((row) => `<span class="current-key" title="${escapeHtml(seasonWeekLoadLabel(row))}"><i aria-hidden="true"></i>This week · ${seasonTss(row.recorded_tss)} TSS so far</span>`).join("") : "";
       const raceButton = (event, prefix) => `<button type="button" class="season-race" data-season-date="${escapeHtml(event.date)}" data-season-focus="${prefix}-${escapeHtml(event.date)}" title="${escapeHtml(event.description)}"${event.selectable ? "" : " disabled"}><span>${escapeHtml(dayLabel(event.date))}${event.tentative ? " · tentative" : ""}${event.selectable ? "" : " · no loaded day"}</span><strong>${escapeHtml(event.label)}</strong></button>`;
       return `
         <section class="season-horizon${full ? " season-overview-horizon" : ""}" aria-label="${full ? "Season training load" : "Season horizon"}" data-season-jump="${scope}" data-season-start="${escapeHtml(layout.start_date)}" data-season-end="${escapeHtml(layout.end_date)}">
@@ -10956,7 +10963,7 @@ HTML_TEMPLATE = """<!doctype html>
           ${full ? `<p class="season-overview-stats">${overviewStats}</p>` : ""}
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <div class="season-chart-key" title="${escapeHtml(provenance.note)}">${chartKey}${races.length ? '<span class="event-key"><i aria-hidden="true"></i>Events</span>' : ""}</div>
+              <div class="season-chart-key" title="${escapeHtml(provenance.note)}">${chartKey}${currentWeekKey}${races.length ? '<span class="event-key"><i aria-hidden="true"></i>Events</span>' : ""}</div>
               <div class="season-track-actions">
                 <div class="season-chart-switcher" role="group" aria-label="Season chart"><button type="button" data-season-chart="plan" data-season-focus="chart-plan" aria-pressed="${mode === "plan"}">Plan</button><button type="button" data-season-chart="load" data-season-focus="chart-load" aria-pressed="${mode === "load"}">CTL / ATL</button></div>
                 <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>

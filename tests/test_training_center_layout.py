@@ -76,6 +76,19 @@ class TrainingCenterLayoutTest(unittest.TestCase):
             self._rules("body.primary-shell .topbar-actions")[0]["flex-wrap"], "nowrap"
         )
 
+    def test_sidebar_session_and_week_events_use_plain_backgrounds(self):
+        session = self._rules("body.primary-shell .coach-rail .session-card")[-1]
+        self.assertEqual(session["background"], "transparent")
+        event = self._rules(".week-status-events .event-chip")[-1]
+        for key, value in {
+            "background": "transparent",
+            "border": "0",
+            "border-radius": "0",
+            "padding": "0",
+            "text-transform": "none",
+        }.items():
+            self.assertEqual(event[key], value)
+
     @unittest.skipUnless(shutil.which("node"), "Node.js is needed for renderer tests")
     def test_week_totals_are_closed_by_default_and_keep_all_values_and_provenance(self):
         week = {
@@ -131,19 +144,23 @@ const DATA={weeks:[
 ]};
 const state={selectedWeekStart:'2026-09-07'};
 const calls=[];
+const eventFocusRestores=[];
 const select={value:''};
 let details=null;
+let eventDetails={open:false};
 function nextDetails(week,open){
   const summary={focus(options){calls.push(options);document.activeElement=this;}};
   return {dataset:{weekTotals:week},open,querySelector(){return summary;}};
 }
 const root={
   querySelector(selector){
+    if(selector==='.season-event-list') return eventDetails;
     if(selector==='details[data-week-totals]') return details;
     if(selector==='details[data-week-totals] > summary') return details?.querySelector('summary');
     return null;
   },
   set innerHTML(markup){
+    eventDetails={open:false};
     const tag=markup.match(/<details[^>]*data-week-totals="([^"]+)"[^>]*>/);
     details=tag?nextDetails(tag[1],/\\sopen(?:\\s|>)/.test(tag[0])):null;
     document.activeElement=null;
@@ -151,7 +168,7 @@ const root={
 };
 const document={activeElement:null,getElementById(id){return id==='week-list'?root:select;}};
 const escapeHtml=value=>String(value??'');
-const seasonFocusKey=()=>null;
+const seasonFocusKey=()=>document.activeElement?.seasonFocus||null;
 const coachingDisclosureState=()=>new Set();
 const weekStatusForToday=()=>({label:'Recorded',status:'recorded_history'});
 const weekStatusCopy=()=>'';
@@ -164,7 +181,7 @@ function renderWeekDay(){}
 function bindWeekCards(){}
 function bindSeasonHorizon(){}
 function restoreCoachingDisclosures(){}
-function restoreSeasonFocus(){}
+function restoreSeasonFocus(root,key){if(key)eventFocusRestores.push({key,open:eventDetails.open});}
 function requestAnimationFrame(){}
 function syncWeekIntervalLists(){}
 """
@@ -183,7 +200,11 @@ const unrelated={open:details.open,calls:[...calls]};
 document.activeElement=details.querySelector('summary');
 state.selectedWeekStart='2026-09-14';
 renderWeek();
-console.log(JSON.stringify({initial,same,unrelated,next:{open:details.open,calls:[...calls]}}));
+const next={open:details.open,calls:[...calls]};
+eventDetails.open=true;
+document.activeElement={seasonFocus:'event-2026-09-20'};
+renderWeek();
+console.log(JSON.stringify({initial,same,unrelated,next,eventFocusRestores}));
 """
         result = self._run(source)
         self.assertFalse(result["initial"])
@@ -193,6 +214,7 @@ console.log(JSON.stringify({initial,same,unrelated,next:{open:details.open,calls
         )
         self.assertEqual(result["unrelated"], {"open": True, "calls": []})
         self.assertEqual(result["next"], {"open": False, "calls": []})
+        self.assertEqual(result["eventFocusRestores"], [{"key": "event-2026-09-20", "open": True}])
 
 
 if __name__ == "__main__":

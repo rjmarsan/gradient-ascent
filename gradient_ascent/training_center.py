@@ -5918,7 +5918,10 @@ HTML_TEMPLATE = """<!doctype html>
       stroke: none;
     }
 
-    body.primary-shell .coach-rail .session-card,
+    body.primary-shell .coach-rail .session-card {
+      background: transparent;
+    }
+
     body.primary-shell .coach-rail .rail-mini-grid div {
       border-color: rgba(255, 255, 255, 0.1);
       background: rgba(255, 255, 255, 0.028);
@@ -6596,6 +6599,7 @@ HTML_TEMPLATE = """<!doctype html>
     .season-chart-key .planned-key i { border-color: #7d9b7a; }
     .season-chart-key .range-key i { height: 6px; border: 1px solid #aabd9f; background: #d3dfcd; }
     .season-chart-key .recorded-key i { height: 6px; border: 1px solid #527966; background: #527966; }
+    .season-chart-key .event-key i { width: 5px; height: 9px; border: 0; border-left: 1px solid #a87861; }
 
     .season-chart-switcher {
       display: inline-flex;
@@ -6709,6 +6713,11 @@ HTML_TEMPLATE = """<!doctype html>
     .season-recorded-area { fill: #648774; fill-opacity: .55; }
     .season-recorded-line { fill: none; stroke: #527966; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
     .season-day-hit, .season-week-hit { fill: transparent; }
+    .season-chart-event-line { stroke: #a87861; stroke-opacity: .42; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .season-chart-event-cap { stroke: #a87861; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .season-chart-event.tentative .season-chart-event-line { stroke-opacity: .3; stroke-dasharray: 2 4; }
+    .season-chart-event.past .season-chart-event-cap { stroke-opacity: .65; }
+    .season-chart-event-hit { fill: transparent; pointer-events: all; }
 
     .season-chart-scale {
       position: absolute;
@@ -7059,11 +7068,17 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     .week-status-events .event-chip {
-      width: fit-content;
+      width: auto;
       max-width: 100%;
-      padding: 4px 6px;
-      font-size: .41rem;
-      line-height: 1.18;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 0;
+      color: #5a5b53;
+      font-size: .6rem;
+      line-height: 1.45;
+      letter-spacing: 0;
+      text-transform: none;
       white-space: normal;
     }
 
@@ -10482,7 +10497,17 @@ HTML_TEMPLATE = """<!doctype html>
       };
     }
 
-    function renderSeasonPlanChart(series) {
+    function renderSeasonChartEvents(events = []) {
+      return events.filter((event) => Number.isFinite(event.left) && event.left >= 0 && event.left <= 100).map((event) => {
+        const x = Number((event.left * 10).toFixed(2));
+        const period = event.date < TODAY ? "past" : event.date > TODAY ? "future" : "current";
+        const hitLeft = Math.max(0, x - 3);
+        const hitWidth = Math.min(1000, x + 3) - hitLeft;
+        return `<g class="season-chart-event ${period}${event.tentative ? " tentative" : ""}" data-chart-event="${escapeHtml(event.date)}"><title>${escapeHtml(event.description)}</title><line class="season-chart-event-line" x1="${x}" x2="${x}" y1="5" y2="108"></line><line class="season-chart-event-cap" x1="${Math.max(0, x - 2)}" x2="${Math.min(1000, x + 2)}" y1="5" y2="5"></line><rect class="season-chart-event-hit" x="${hitLeft}" y="0" width="${hitWidth}" height="108"></rect></g>`;
+      }).join("");
+    }
+
+    function renderSeasonPlanChart(series, events = []) {
       const width = 1000;
       const baseline = 108;
       const top = 5;
@@ -10517,6 +10542,7 @@ HTML_TEMPLATE = """<!doctype html>
         <line class="season-chart-grid mid" x1="0" x2="${width}" y1="${y(series.max_tss / 2)}" y2="${y(series.max_tss / 2)}"></line>
         ${plannedArea}${targets}${recorded}${trajectory}
         ${series.rows.map((row) => `<rect class="season-week-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(`${dayLabel(row.start_date)}–${dayLabel(row.end_date)} · ${seasonWeekLoadLabel(row)}${row.target_note && row.target_min !== null ? ` · ${row.target_note}` : ""} · Whole-week totals`)}</title></rect>`).join("")}
+        ${renderSeasonChartEvents(events)}
       </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(series.max_tss)} TSS/week</span><span>0 TSS/week</span></div>` : '<span class="season-chart-empty">No weekly TSS data</span>'}`;
     }
 
@@ -10735,7 +10761,7 @@ HTML_TEMPLATE = """<!doctype html>
       return `${result} Starts tomorrow; remaining today’s plan excluded.`;
     }
 
-    function renderPerformanceLoadChart(series, projection = null) {
+    function renderPerformanceLoadChart(series, projection = null, events = []) {
       const width = 1000;
       const baseline = 108;
       const top = 5;
@@ -10764,6 +10790,7 @@ HTML_TEMPLATE = """<!doctype html>
         ${curves}${projected}
         ${series.rows.filter((row) => row.ctl !== null).map((row) => `<rect class="season-day-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(performanceLoadTooltip(row))}</title></rect>`).join("")}
         ${(projection?.rows || []).map((row) => `<rect class="season-day-hit" x="${x(row.left)}" y="0" width="${Math.max(0, x(row.right) - x(row.left))}" height="${baseline}"><title>${escapeHtml(performanceProjectionTooltip(row))}</title></rect>`).join("")}
+        ${renderSeasonChartEvents(events)}
       </svg>${hasData ? `<div class="season-chart-scale" aria-hidden="true"><span>${seasonTss(maxLoad)} TSS/day</span><span>0 TSS/day</span></div>` : `<span class="season-chart-empty">${escapeHtml(performanceLoadUnavailableLabel(series))}</span>`}`;
     }
 
@@ -10929,7 +10956,7 @@ HTML_TEMPLATE = """<!doctype html>
           ${full ? `<p class="season-overview-stats">${overviewStats}</p>` : ""}
           <div class="season-track-wrap">
             <div class="season-track-meta">
-              <div class="season-chart-key" title="${escapeHtml(provenance.note)}">${chartKey}</div>
+              <div class="season-chart-key" title="${escapeHtml(provenance.note)}">${chartKey}${races.length ? '<span class="event-key"><i aria-hidden="true"></i>Events</span>' : ""}</div>
               <div class="season-track-actions">
                 <div class="season-chart-switcher" role="group" aria-label="Season chart"><button type="button" data-season-chart="plan" data-season-focus="chart-plan" aria-pressed="${mode === "plan"}">Plan</button><button type="button" data-season-chart="load" data-season-focus="chart-load" aria-pressed="${mode === "load"}">CTL / ATL</button></div>
                 <span class="season-selection-key"><i aria-hidden="true"></i>Shown week · ${escapeHtml(shownWeek)}</span>
@@ -10938,7 +10965,7 @@ HTML_TEMPLATE = """<!doctype html>
               </div>
             </div>
             <div class="season-track" ${horizonWeeks.length ? `data-season-track data-season-focus="track" role="slider" tabindex="0" aria-label="Select week from season horizon" aria-valuemin="0" aria-valuemax="${horizonWeeks.length - 1}" aria-valuenow="${selectedIndex}" aria-valuetext="${escapeHtml(selectedDescription)}"` : `role="img" aria-label="${mode === "load" ? "Season CTL and ATL chart" : "Season planned and recorded TSS chart"}"`} aria-describedby="${summaryId}${mode === "load" ? ` ${projectionNoteId}` : ""}">
-              ${mode === "plan" ? renderSeasonPlanChart(weeklySeries) : renderPerformanceLoadChart(loadSeries, projection)}
+              ${mode === "plan" ? renderSeasonPlanChart(weeklySeries, races) : renderPerformanceLoadChart(loadSeries, projection, races)}
               ${layout.phases.map((phase) => {
                 const label = `${phase.name} · ${dayLabel(phase.start_date)}–${dayLabel(phase.end_date)}`;
                 return `<div class="season-phase ${phaseTone(phase.name)}" data-season-phase aria-hidden="true" title="${escapeHtml(label)}" style="left:${phase.left}%; width:${phase.width}%"></div>`;
@@ -10954,7 +10981,7 @@ HTML_TEMPLATE = """<!doctype html>
             <p class="season-load-readout" id="${summaryId}" aria-live="polite">${full && selectedPhase ? `<span data-season-phase-readout>Phase: ${escapeHtml(selectedPhase)} · </span>` : ""}${escapeHtml(loadSummary)}${horizonWeeks.length ? ` · Select a week for details${full ? "; Enter opens Week" : ""}` : ""}</p>
             ${mode === "load" ? `<p class="season-projection-note" id="${projectionNoteId}">${escapeHtml(performanceProjectionNote(projection))}</p>` : ""}
             ${full && mode === "load" && selectedWeekLoad ? `<p class="season-week-budget-readout" title="${escapeHtml(selectedWeekLoad.target_min !== null ? selectedWeekLoad.target_note : "")}">Shown week · ${escapeHtml(seasonWeekLoadLabel(selectedWeekLoad))}</p>` : ""}
-            ${full && races.length ? `<details class="season-event-list"><summary>${races.reduce((count, event) => count + event.names.length, 0)} races and events in ${escapeHtml(year)}</summary><div>${races.map((event) => raceButton(event, "event")).join("")}</div></details>` : ""}
+            ${races.length ? `<details class="season-event-list"><summary>${races.reduce((count, event) => count + event.names.length, 0)} races and events${full ? ` in ${escapeHtml(year)}` : ""}</summary><div>${races.map((event) => raceButton(event, "event")).join("")}</div></details>` : ""}
           </div>
         </section>`;
     }
@@ -11066,6 +11093,7 @@ HTML_TEMPLATE = """<!doctype html>
     function renderWeek() {
       const weekRoot = document.getElementById("week-list");
       const horizonFocus = seasonFocusKey(weekRoot);
+      const eventsOpen = weekRoot.querySelector(".season-event-list")?.open === true;
       const openedContext = coachingDisclosureState(weekRoot);
       const previousTotals = weekTotalsDisclosureState(weekRoot);
       const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || DATA.weeks[0];
@@ -11183,6 +11211,8 @@ HTML_TEMPLATE = """<!doctype html>
         </article>`;
       bindWeekCards();
       bindSeasonHorizon();
+      const events = weekRoot.querySelector(".season-event-list");
+      if (events && eventsOpen) events.open = true;
       restoreCoachingDisclosures(weekRoot, openedContext);
       restoreSeasonFocus(weekRoot, horizonFocus);
       restoreWeekTotalsFocus(weekRoot, previousTotals, week.start_date);

@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -36,6 +37,49 @@ class SeasonViewTest(unittest.TestCase):
             timeout=15,
         )
         return json.loads(result.stdout)
+
+    def test_both_chart_modes_show_date_aligned_past_and_future_events(self):
+        data = {
+            "weeks": [{"start_date": "2026-08-10", "end_date": "2026-08-16"}],
+            "phases": [{"name": "Season", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+            "days": [{"date": "2026-01-01"}],
+            "events": [
+                {"id": "first", "date": "2026-01-01", "name": "Past <race>", "status": "confirmed"},
+                {"id": "first", "date": "2026-01-01", "name": "Past <race>", "status": "confirmed"},
+                {"id": "second", "date": "2026-01-01", "name": "Same-day & event"},
+                {"date": "2026-12-31", "name": "Future race", "status": "tentative"},
+                {"date": "2027-01-01", "name": "Outside"},
+                {"date": "2026-06-01", "name": "Skipped", "markers": {"skip": True}},
+                {"date": "2026-02-30", "name": "Invalid date"},
+            ],
+        }
+        rendered = self.run_season(
+            "['plan','load'].flatMap(mode=>{state.seasonChart=mode;return [renderSeasonHorizon(DATA.weeks[0]),renderSeasonHorizon(DATA.weeks[0],{scope:'calendar',year:'2026'})]})",
+            data=data,
+        )
+        for markup in rendered:
+            with self.subTest(markup=markup[:80]):
+                self.assertEqual(
+                    re.findall(r'data-chart-event="([^"]+)"', markup), ["2026-01-01", "2026-12-31"]
+                )
+                self.assertRegex(
+                    markup, r'class="season-chart-event past"[^>]*data-chart-event="2026-01-01"'
+                )
+                self.assertRegex(
+                    markup,
+                    r'class="season-chart-event future tentative"[^>]*data-chart-event="2026-12-31"',
+                )
+                self.assertIn('class="season-chart-event-line" x1="0" x2="0"', markup)
+                self.assertIn('class="season-chart-event-line" x1="997.26" x2="997.26"', markup)
+                self.assertIn("Past &lt;race&gt;", markup)
+                self.assertIn("Same-day &amp; event", markup)
+                self.assertIn('class="season-event-list"', markup)
+                self.assertIn("3 races and events", markup)
+                self.assertRegex(
+                    markup, r'<button[^>]*data-season-date="2026-12-31"[^>]* disabled>'
+                )
+                for excluded in ("<race>", "Outside", "Skipped", "Invalid date", "NaN"):
+                    self.assertNotIn(excluded, markup)
 
     def test_explicit_year_domain_works_without_phases_and_clips_real_phases(self):
         data = {

@@ -5699,6 +5699,8 @@ HTML_TEMPLATE = """<!doctype html>
       --coach-canvas: #f5f5f1;
       --coach-paper: #faf9f4;
       --coach-paper-soft: #f6f6f1;
+      --coach-rail-width: 262px;
+      --coach-header-height: 66px;
     }
 
     body.primary-shell .page {
@@ -5709,10 +5711,15 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     body.primary-shell .topbar {
+      grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+      grid-template-areas: ". tabs actions";
+      height: var(--coach-header-height);
+      min-height: var(--coach-header-height);
       border-bottom: 1px solid transparent;
       background: transparent;
-      width: calc(100% - 262px);
-      margin-left: 262px;
+      width: calc(100% - var(--coach-rail-width));
+      margin-left: var(--coach-rail-width);
+      margin-bottom: 0;
       box-shadow: none;
       backdrop-filter: none;
       transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
@@ -5739,14 +5746,27 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     body.primary-shell .topbar .brand {
+      display: none;
       visibility: hidden;
     }
 
+    body.primary-shell .topbar .tabs {
+      grid-area: tabs;
+      width: auto;
+    }
+
+    body.primary-shell .topbar-actions {
+      grid-area: actions;
+      justify-self: end;
+      width: max-content;
+      flex-wrap: nowrap;
+    }
+
     body.primary-shell .workspace {
-      grid-template-columns: minmax(244px, 262px) minmax(0, 1fr);
+      grid-template-columns: var(--coach-rail-width) minmax(0, 1fr);
       gap: 0;
       padding-top: 0;
-      margin-top: -92px;
+      margin-top: calc(-1 * var(--coach-header-height));
     }
 
     body.primary-shell .context-stack {
@@ -6287,7 +6307,7 @@ HTML_TEMPLATE = """<!doctype html>
 
     body.primary-shell .center-stage {
       background: var(--coach-canvas);
-      padding: 92px 18px 18px;
+      padding: var(--coach-header-height) 0 0;
     }
 
     body.primary-shell .month-strip-shell {
@@ -6816,10 +6836,35 @@ HTML_TEMPLATE = """<!doctype html>
       white-space: nowrap;
     }
 
+    .week-load-details {
+      border-block: 1px solid var(--rule);
+      background: #f1f3ec;
+    }
+
+    .week-load-details > summary {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 18px;
+      color: #365442;
+      cursor: pointer;
+      list-style: none;
+      font: 700 .55rem "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .week-load-details > summary::-webkit-details-marker { display: none; }
+    .week-load-details > summary::marker { content: ""; }
+    .week-load-details > summary::after { content: "+"; flex: 0 0 auto; font-size: .8rem; }
+    .week-load-details[open] > summary::after { content: "−"; }
+    .week-load-details > summary:focus-visible { outline: 2px solid #66856b; outline-offset: -2px; }
+    .week-load-details > summary small { margin-left: auto; color: #727b6c; font: 400 .6rem/1.3 Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 0; text-transform: none; }
+
     .week-load-overview {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      border-block: 1px solid var(--rule);
+      border-top: 1px solid var(--rule);
       background: #f1f3ec;
     }
 
@@ -6842,6 +6887,7 @@ HTML_TEMPLATE = """<!doctype html>
     .rail-load-note { margin: 7px 0 0; color: rgba(229, 228, 207, .76); font-size: .62rem; line-height: 1.45; }
 
     @media (max-width: 760px) {
+      .week-load-details > summary { padding: 10px 12px; }
       .week-load-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .week-load-overview > div { padding: 10px 12px; }
       .week-load-overview > div:nth-child(2) { border-right: 0; }
@@ -7494,12 +7540,24 @@ HTML_TEMPLATE = """<!doctype html>
 
     @media (max-width: 960px) {
       body.primary-shell .topbar {
+        grid-template-columns: minmax(0, 1fr) max-content;
+        grid-template-areas:
+          "brand actions"
+          "tabs tabs";
+        height: auto;
+        min-height: 0;
         width: 100%;
         margin-left: 0;
       }
 
       body.primary-shell .topbar .brand {
+        display: grid;
+        grid-area: brand;
         visibility: visible;
+      }
+
+      body.primary-shell .topbar .tabs {
+        width: 100%;
       }
 
       body.primary-shell .brand-mark {
@@ -10978,10 +11036,38 @@ HTML_TEMPLATE = """<!doctype html>
       </div>`;
     }
 
+    function weekTotalsDisclosureState(root) {
+      const details = root?.querySelector?.("details[data-week-totals]");
+      const week = details?.dataset?.weekTotals;
+      if (typeof week !== "string") return null;
+      const summary = details.querySelector("summary");
+      return { week, open: details.open, focused: Boolean(summary && summary === document.activeElement) };
+    }
+
+    function renderWeekLoadOverview(week, previous = null) {
+      const open = previous?.week === week.start_date && previous.open;
+      return `<details class="week-load-details" data-week-totals="${escapeHtml(week.start_date || "")}"${open ? " open" : ""}>
+        <summary><span>Week totals</span><small>Scheduled and recorded</small></summary>
+        <div class="week-load-overview" aria-label="Scheduled and recorded week totals">
+          <div><span>Scheduled hours</span><strong>${escapeHtml(week.planned_load?.hours_label || week.target_hours_label || "--")}</strong><small>${week.planned_load?.duration_source === "source_weekly_hours" ? "Weekly target" : "Scheduled duration"}</small></div>
+          <div class="forecast-value" title="${escapeHtml(week.planned_load?.note || "")}"><span>TSS budget</span><strong>${escapeHtml(week.planned_load?.tss_value_label || "-- TSS")}</strong><small>${escapeHtml(week.planned_load?.qualifier || "Budget not set")}${week.planned_load?.budget_ceiling_label ? ` · ceiling ${escapeHtml(week.planned_load.budget_ceiling_label)}` : ""}${week.planned_load?.budget_review_required && week.planned_load?.estimated_tss != null ? " · previous coach budget needs review" : ""}${week.separate_structured_workout_count ? ` · ${week.separate_structured_workout_count} separate structured workout${week.separate_structured_workout_count === 1 ? "" : "s"}` : ""}</small></div>
+          <div><span>Recorded hours</span><strong>${escapeHtml(Number(week.totals?.activity_count || 0) ? week.actual_hours_label : "--")}</strong><small>${Number(week.totals?.activity_count || 0) ? "Moving time" : "No recordings"}</small></div>
+          <div title="${escapeHtml(week.tss_description || "")}"><span>Recorded TSS</span><strong>${escapeHtml(week.estimated_tss_label || "-- TSS")}</strong><small>${escapeHtml(week.tss_qualifier || "No supported load")}</small></div>
+        </div>
+      </details>`;
+    }
+
+    function restoreWeekTotalsFocus(root, previous, weekStart) {
+      if (previous?.focused && previous.week === weekStart) {
+        root?.querySelector?.("details[data-week-totals] > summary")?.focus({ preventScroll: true });
+      }
+    }
+
     function renderWeek() {
       const weekRoot = document.getElementById("week-list");
       const horizonFocus = seasonFocusKey(weekRoot);
       const openedContext = coachingDisclosureState(weekRoot);
+      const previousTotals = weekTotalsDisclosureState(weekRoot);
       const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || DATA.weeks[0];
       if (!week) {
         const rider = String(DATA.athlete?.display_name || "Your").trim();
@@ -11021,12 +11107,7 @@ HTML_TEMPLATE = """<!doctype html>
       document.getElementById("week-list").innerHTML = `
         <article class="week-card">
           ${renderSeasonHorizon(week)}
-          <div class="week-load-overview" aria-label="Scheduled and recorded week totals">
-            <div><span>Scheduled hours</span><strong>${escapeHtml(week.planned_load?.hours_label || week.target_hours_label || "--")}</strong><small>${week.planned_load?.duration_source === "source_weekly_hours" ? "Weekly target" : "Scheduled duration"}</small></div>
-            <div class="forecast-value" title="${escapeHtml(week.planned_load?.note || "")}"><span>TSS budget</span><strong>${escapeHtml(week.planned_load?.tss_value_label || "-- TSS")}</strong><small>${escapeHtml(week.planned_load?.qualifier || "Budget not set")}${week.planned_load?.budget_ceiling_label ? ` · ceiling ${escapeHtml(week.planned_load.budget_ceiling_label)}` : ""}${week.planned_load?.budget_review_required && week.planned_load?.estimated_tss != null ? " · previous coach budget needs review" : ""}${week.separate_structured_workout_count ? ` · ${week.separate_structured_workout_count} separate structured workout${week.separate_structured_workout_count === 1 ? "" : "s"}` : ""}</small></div>
-            <div><span>Recorded hours</span><strong>${escapeHtml(Number(week.totals?.activity_count || 0) ? week.actual_hours_label : "--")}</strong><small>${Number(week.totals?.activity_count || 0) ? "Moving time" : "No recordings"}</small></div>
-            <div title="${escapeHtml(week.tss_description || "")}"><span>Recorded TSS</span><strong>${escapeHtml(week.estimated_tss_label || "-- TSS")}</strong><small>${escapeHtml(week.tss_qualifier || "No supported load")}</small></div>
-          </div>
+          ${renderWeekLoadOverview(week, previousTotals)}
           <div class="week-intel">
             <div class="week-thesis">
               <div class="week-desk-kicker">Week thesis</div>
@@ -11104,6 +11185,7 @@ HTML_TEMPLATE = """<!doctype html>
       bindSeasonHorizon();
       restoreCoachingDisclosures(weekRoot, openedContext);
       restoreSeasonFocus(weekRoot, horizonFocus);
+      restoreWeekTotalsFocus(weekRoot, previousTotals, week.start_date);
       requestAnimationFrame(syncWeekIntervalLists);
     }
 

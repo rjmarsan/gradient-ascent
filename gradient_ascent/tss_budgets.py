@@ -27,7 +27,6 @@ from .recording_repair import (
     _directory,
     _read,
     _stat,
-    _write,
 )
 from .workspace_lock import workspace_identity, workspace_lock
 
@@ -288,7 +287,7 @@ def _read_plan(root: int, name: str, default: Any) -> Any:
         return default
 
 
-def _stored(root: int) -> dict[tuple[str, str], dict[str, Any]]:
+def _stored_body(root: int) -> bytes | None:
     try:
         with _directory(root, "plan") as plan:
             info = _stat(plan, _FILE, MAX_BUDGET_BYTES)
@@ -297,7 +296,11 @@ def _stored(root: int) -> dict[tuple[str, str], dict[str, Any]]:
             body = _read(plan, _FILE, MAX_BUDGET_BYTES)
     except FileNotFoundError:
         body = None
-    return _collection(_decode(body, {"version": 1, "budgets": []}), stored=True)
+    return body
+
+
+def _stored(root: int) -> dict[tuple[str, str], dict[str, Any]]:
+    return _collection(_decode(_stored_body(root), {"version": 1, "budgets": []}), stored=True)
 
 
 def _context(root: int) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, Any]]:
@@ -548,7 +551,10 @@ def update_tss_budgets(
     *,
     replace: bool = False,
     expected_identity: tuple[int, int] | None = None,
-) -> dict[str, int]:
+    history_request: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from .plan_changes import change_request, commit_plan_files, file_digest, scopes_for_dates
+
     if type(replace) is not bool or not _secure_files_supported():
         raise RuntimeError("This platform cannot safely write TSS budgets.")
     data_dir = Path(data_dir).expanduser()
@@ -562,7 +568,8 @@ def update_tss_budgets(
         os.close(source)
     identity = expected_identity if expected_identity is not None else workspace_identity(data_dir)
     with workspace_lock(data_dir, expected_identity=identity), _directory(data_dir) as root:
-        old = _stored(root)
+        before_body = _stored_body(root)
+        old = _collection(_decode(before_body, {"version": 1, "budgets": []}), stored=True)
         weeks, context = _context(root)
         resolved = _resolve(old, weeks, context)
         result = {"created": 0, "updated": 0, "unchanged": 0, "removed": 0}
@@ -636,9 +643,37 @@ def update_tss_budgets(
         ):
             raise ValueError("Plan fingerprint changed during validation; review and retry.")
         _assert_generation(data_dir, root, identity)
-        if merged != old:
-            with _directory(root, "plan", create=True) as plan:
-                _assert_generation(data_dir, root, identity)
-                _write(plan, _FILE, _encode(document), MAX_BUDGET_BYTES)
+        history = {"id": None, "status": "unchanged", "created": False, "changed_files": 0}
+        if merged != old or history_request is not None:
+            body = _encode(document) if merged != old else before_body
+            if body is not None and len(body) > MAX_BUDGET_BYTES:
+                raise ValueError("TSS budget document exceeds its size limit.")
+            changed = sorted(
+                key for key in old.keys() | merged.keys() if old.get(key) != merged.get(key)
+            )
+            scopes = (
+                [{"kind": "week", "start_date": first, "end_date": last} for first, last in changed]
+                if len(changed) <= 16
+                else scopes_for_dates([value for key in changed for value in key])
+            )
+            history = commit_plan_files(
+                data_dir,
+                {f"plan/{_FILE}": body},
+                request=change_request(
+                    "tss-budget",
+                    title="Update coaching TSS budgets",
+                    rationale="Apply explicitly authored and validated coaching TSS budgets.",
+                    scopes=scopes,
+                    supplied=history_request,
+                ),
+                expected_identity=identity,
+                expected_hashes={f"plan/{_FILE}": file_digest(before_body)},
+                retry_from_current=True,
+                inferred_scopes=history_request is None or "scopes" not in history_request,
+            )
         _assert_generation(data_dir, root, identity)
-        return {**result, **_summary(_resolve(merged, latest_weeks, latest_context))}
+        return {
+            **result,
+            **_summary(_resolve(merged, latest_weeks, latest_context)),
+            "history": history,
+        }

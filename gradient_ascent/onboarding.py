@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .storage import read_json, write_json
+from . import coaching_history, recording_repair
+from .plan_changes import (
+    change_request,
+    commit_plan_files,
+    file_digest,
+    json_bytes,
+    scopes_for_dates,
+)
+from .workspace_lock import workspace_identity, workspace_lock
 
 
 ONBOARDING_PATH = Path("plan") / "onboarding.json"
@@ -29,10 +40,7 @@ def _activity_count(data_dir: Path) -> int:
         payload = read_json(data_dir / relative, default={}) or {}
         if isinstance(payload, (dict, list)):
             total += len(payload)
-    total += sum(
-        len(manifest["activities"])
-        for manifest in load_external_sync_manifests(data_dir)
-    )
+    total += sum(len(manifest["activities"]) for manifest in load_external_sync_manifests(data_dir))
     return total
 
 
@@ -40,7 +48,9 @@ def _profile_configured(data_dir: Path) -> bool:
     athlete = read_json(data_dir / "plan" / "athlete.json", default={}) or {}
     if not isinstance(athlete, dict):
         return False
-    has_experience = bool(athlete.get("experience_level")) or athlete.get("experience_years") is not None
+    has_experience = (
+        bool(athlete.get("experience_level")) or athlete.get("experience_years") is not None
+    )
     return bool(
         athlete.get("timezone")
         and athlete.get("unit_system") in {"metric", "imperial"}
@@ -89,6 +99,68 @@ def _required_single_line(value: str, *, field: str) -> str:
     return normalized
 
 
+def _commit_onboarding(
+    data_dir: Path,
+    relative: str,
+    prepare: Callable[[bytes | None], bytes],
+    *,
+    operation: str,
+    title: str,
+    rationale: str,
+    history_request: dict[str, Any] | None,
+    expected_identity: tuple[int, int] | None,
+    scopes: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    data_dir = Path(data_dir)
+    supported = coaching_history.history_write_available(data_dir)
+    identity = expected_identity if expected_identity is not None else workspace_identity(data_dir)
+    with workspace_lock(data_dir, expected_identity=identity):
+        request = change_request(
+            operation, title=title, rationale=rationale, scopes=scopes, supplied=history_request
+        )
+        if supported:
+            with recording_repair._directory(data_dir) as root:
+                before = coaching_history._read_target(root, relative)
+                after = prepare(before)
+                recording_repair._assert_generation(data_dir, root, identity)
+                result = commit_plan_files(
+                    data_dir,
+                    {relative: after},
+                    request=request,
+                    expected_identity=identity,
+                    expected_hashes={relative: file_digest(before)},
+                    legacy_fallback=True,
+                    retry_from_current=True,
+                    inferred_scopes=history_request is None or "scopes" not in history_request,
+                )
+                recording_repair._assert_generation(data_dir, root, identity)
+        else:
+            path = data_dir / relative
+            if path.is_symlink():
+                raise ValueError("Onboarding plan source cannot be a symbolic link.")
+            before = path.read_bytes() if path.exists() else None
+            result = commit_plan_files(
+                data_dir,
+                {relative: prepare(before)},
+                request=request,
+                expected_identity=identity,
+                expected_hashes={relative: file_digest(before)},
+                legacy_fallback=True,
+                retry_from_current=True,
+                inferred_scopes=history_request is None or "scopes" not in history_request,
+            )
+    return {**onboarding_status(data_dir), "history": result, "history_status": result["status"]}
+
+
+def _json_document(body: bytes | None, default: Any) -> Any:
+    if body is None:
+        return default
+    try:
+        return json.loads(body)
+    except (UnicodeError, json.JSONDecodeError):
+        raise ValueError("Onboarding plan source is invalid JSON.") from None
+
+
 def set_onboarding_goals(
     data_dir: Path,
     *,
@@ -98,11 +170,9 @@ def set_onboarding_goals(
     success: str,
     coaching_implication: str,
     evidence: str,
+    history_request: dict[str, Any] | None = None,
+    expected_identity: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
-    if _goals_configured(data_dir):
-        raise ValueError(
-            "Goals are already configured; use the goals skill to revise them instead of replacing them."
-        )
     values = {
         "north_star": _required_single_line(north_star, field="north_star"),
         "goal": _required_single_line(goal, field="goal"),
@@ -125,8 +195,30 @@ def set_onboarding_goals(
         f"- **Direct and supporting evidence:** {values['evidence']}\n"
         "- **Incomplete evidence:** Say what is missing; do not infer success or failure.\n"
     )
-    (data_dir / "plan" / "goals.md").write_text(text, encoding="utf-8")
-    return onboarding_status(data_dir)
+    body = text.encode("utf-8")
+
+    def prepare(before: bytes | None) -> bytes:
+        if before != body and before is not None:
+            try:
+                previous = before.decode("utf-8").strip().lower()
+            except UnicodeError:
+                raise ValueError("Existing goals are not valid UTF-8 text.") from None
+            if "## main goals" in previous and "replace with" not in previous:
+                raise ValueError(
+                    "Goals are already configured; use the goals skill to revise them instead of replacing them."
+                )
+        return body
+
+    return _commit_onboarding(
+        data_dir,
+        "plan/goals.md",
+        prepare,
+        operation="onboarding-goals",
+        title="Set initial coaching goals",
+        rationale="Record the athlete's explicitly supplied initial goals.",
+        history_request=history_request,
+        expected_identity=expected_identity,
+    )
 
 
 def _event_slug(value: str) -> str:
@@ -141,6 +233,8 @@ def add_onboarding_event(
     discipline: str,
     priority: str,
     location: str | None = None,
+    history_request: dict[str, Any] | None = None,
+    expected_identity: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     name = _required_single_line(name, field="name")
     discipline = _required_single_line(discipline, field="discipline")
@@ -173,15 +267,29 @@ def add_onboarding_event(
         },
         "raw": raw,
     }
-    events_path = data_dir / "plan" / "events.json"
-    existing = read_json(events_path, default=[]) or []
-    if not isinstance(existing, list):
-        raise ValueError("Event calendar must be a JSON list.")
-    events = [item for item in existing if isinstance(item, dict) and item.get("id") != event["id"]]
-    events.append(event)
-    events.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("name") or "")))
-    write_json(events_path, events)
-    return onboarding_status(data_dir)
+
+    def prepare(before: bytes | None) -> bytes:
+        existing = _json_document(before, []) or []
+        if not isinstance(existing, list):
+            raise ValueError("Event calendar must be a JSON list.")
+        events = [
+            item for item in existing if isinstance(item, dict) and item.get("id") != event["id"]
+        ]
+        events.append(event)
+        events.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("name") or "")))
+        return json_bytes(events)
+
+    return _commit_onboarding(
+        data_dir,
+        "plan/events.json",
+        prepare,
+        operation="onboarding-event",
+        title="Update a coaching target event",
+        rationale="Record an explicitly supplied target event and priority.",
+        history_request=history_request,
+        expected_identity=expected_identity,
+        scopes=scopes_for_dates([parsed_date.isoformat()], prefer_days=True),
+    )
 
 
 def _normalized_values(values: list[str], *, field: str, allow_empty: bool) -> list[str]:
@@ -195,8 +303,8 @@ def _normalized_values(values: list[str], *, field: str, allow_empty: bool) -> l
     return normalized
 
 
-def set_onboarding_profile(
-    data_dir: Path,
+def _profile_document(
+    existing: Any,
     *,
     display_name: str | None = None,
     timezone: str | None = None,
@@ -207,8 +315,6 @@ def set_onboarding_profile(
     constraints: list[str] | None = None,
     sensors: list[str] | None = None,
 ) -> dict[str, Any]:
-    path = data_dir / "plan" / "athlete.json"
-    existing = read_json(path, default={}) or {}
     if not isinstance(existing, dict):
         raise ValueError("Athlete profile must be a JSON object.")
     updated = dict(existing)
@@ -255,8 +361,48 @@ def set_onboarding_profile(
             allow_empty=True,
         )
 
-    write_json(path, updated)
-    return onboarding_status(data_dir)
+    return updated
+
+
+def set_onboarding_profile(
+    data_dir: Path,
+    *,
+    display_name: str | None = None,
+    timezone: str | None = None,
+    unit_system: str | None = None,
+    disciplines: list[str] | None = None,
+    experience_level: str | None = None,
+    weekly_availability: str | None = None,
+    constraints: list[str] | None = None,
+    sensors: list[str] | None = None,
+    history_request: dict[str, Any] | None = None,
+    expected_identity: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    def prepare(before: bytes | None) -> bytes:
+        return json_bytes(
+            _profile_document(
+                _json_document(before, {}) or {},
+                display_name=display_name,
+                timezone=timezone,
+                unit_system=unit_system,
+                disciplines=disciplines,
+                experience_level=experience_level,
+                weekly_availability=weekly_availability,
+                constraints=constraints,
+                sensors=sensors,
+            )
+        )
+
+    return _commit_onboarding(
+        data_dir,
+        "plan/athlete.json",
+        prepare,
+        operation="onboarding-profile",
+        title="Update athlete coaching profile",
+        rationale="Record explicitly supplied athlete profile and coaching constraints.",
+        history_request=history_request,
+        expected_identity=expected_identity,
+    )
 
 
 def onboarding_status(data_dir: Path) -> dict[str, Any]:
@@ -267,13 +413,20 @@ def onboarding_status(data_dir: Path) -> dict[str, Any]:
 
     workspace_ready = all(
         (data_dir / relative).exists()
-        for relative in ("AGENTS.md", "plan/athlete.json", "plan/goals.md", "connections/config.json")
+        for relative in (
+            "AGENTS.md",
+            "plan/athlete.json",
+            "plan/goals.md",
+            "connections/config.json",
+        )
     )
     plan_ready = isinstance(weeks, list) and bool(weeks)
     events_ready = isinstance(events, list) and bool(events)
     activities_ready = activity_count > 0
 
-    plan_status = "complete" if plan_ready else "skipped" if choices.get("plan") == "none" else "pending"
+    plan_status = (
+        "complete" if plan_ready else "skipped" if choices.get("plan") == "none" else "pending"
+    )
     activity_status = (
         "complete"
         if activities_ready
@@ -297,7 +450,9 @@ def onboarding_status(data_dir: Path) -> dict[str, Any]:
         {"key": "activities", "status": activity_status, "choice": choices.get("activities")},
         {
             "key": "dashboard",
-            "status": "complete" if (data_dir / "derived" / "training_center.html").exists() else "pending",
+            "status": "complete"
+            if (data_dir / "derived" / "training_center.html").exists()
+            else "pending",
         },
     ]
     current = next(

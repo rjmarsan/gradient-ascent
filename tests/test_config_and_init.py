@@ -16,7 +16,6 @@ from gradient_ascent.cli import (
     _install_goal_files,
 )
 from gradient_ascent.config import default_data_dir, ensure_private_output_path, load_config
-from gradient_ascent.storage import write_text as storage_write_text
 
 
 class ConfigAndInitTest(unittest.TestCase):
@@ -136,6 +135,98 @@ class ConfigAndInitTest(unittest.TestCase):
             self.assertFalse(result["env"]["created"])
             self.assertIn("CUSTOM_SETTING=keep-me", env_path.read_text(encoding="utf-8"))
 
+    def test_force_init_preserves_authored_plan_and_pending_history(self) -> None:
+        from gradient_ascent import coaching_history as history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            _init_workspace(workspace, force=False)
+            goals = workspace / "plan/goals.md"
+            measurement = workspace / "plan/goal_measurement.py"
+            goals.write_bytes(b"Authored goals")
+            measurement.write_bytes(b"# Authored measurement\n")
+            history.initialize_plan_history(workspace)
+            journal = workspace / "plan/.history/journal.json"
+            baseline = journal.read_bytes()
+            _init_workspace(workspace, force=True)
+            self.assertEqual(goals.read_bytes(), b"Authored goals")
+            self.assertEqual(measurement.read_bytes(), b"# Authored measurement\n")
+            self.assertEqual(journal.read_bytes(), baseline)
+            write = history._write_target
+
+            def interrupt(directory, name, body):
+                if name == "plan/goals.md":
+                    raise OSError("interrupted")
+                return write(directory, name, body)
+
+            with (
+                patch.object(history, "_write_target", side_effect=interrupt),
+                self.assertRaises(RuntimeError),
+            ):
+                history.apply_plan_change(
+                    workspace,
+                    updates={
+                        "plan/goals.md": b"New goals",
+                        "plan/goal_measurement.py": b"# New measurement\n",
+                    },
+                    request={
+                        "idempotency_key": "pending-goals",
+                        "title": "Goal revision",
+                        "rationale": "Synthetic explicit revision.",
+                    },
+                )
+            before = {
+                "goals": goals.read_bytes(),
+                "measurement": measurement.read_bytes(),
+                "journal": journal.read_bytes(),
+            }
+            with self.assertRaisesRegex(RuntimeError, "recovery"):
+                _init_workspace(workspace, force=True)
+            self.assertEqual(
+                {
+                    "goals": goals.read_bytes(),
+                    "measurement": measurement.read_bytes(),
+                    "journal": journal.read_bytes(),
+                },
+                before,
+            )
+
+    def test_init_refuses_to_recreate_absent_files_in_pending_change(self) -> None:
+        from gradient_ascent import coaching_history as history
+
+        for initializer in (lambda root: _init_workspace(root, force=True), _init_data_dir):
+            with self.subTest(initializer=initializer), tempfile.TemporaryDirectory() as tmp:
+                workspace = Path(tmp) / "workspace"
+                _init_workspace(workspace, force=False)
+                (workspace / "plan/goals.md").unlink()
+                write = history._write_target
+
+                def interrupt(directory, name, body):
+                    if name == "plan/goals.md":
+                        raise OSError("interrupted")
+                    return write(directory, name, body)
+
+                with (
+                    patch.object(history, "_write_target", side_effect=interrupt),
+                    self.assertRaises(RuntimeError),
+                ):
+                    history.apply_plan_change(
+                        workspace,
+                        updates={"plan/goal_measurement.py": None, "plan/goals.md": b"New goals"},
+                        request={
+                            "idempotency_key": "pending-absence",
+                            "title": "Goal revision",
+                            "rationale": "Synthetic explicit revision.",
+                        },
+                    )
+                journal = workspace / "plan/.history/journal.json"
+                before = journal.read_bytes()
+                with self.assertRaisesRegex(RuntimeError, "recovery"):
+                    initializer(workspace)
+                self.assertFalse((workspace / "plan/goals.md").exists())
+                self.assertFalse((workspace / "plan/goal_measurement.py").exists())
+                self.assertEqual(journal.read_bytes(), before)
+
     def test_repo_local_data_and_output_are_rejected(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         with patch.dict(os.environ, {}, clear=True):
@@ -209,7 +300,9 @@ class ConfigAndInitTest(unittest.TestCase):
             self.assertEqual(result["workspace_dir"], str(target))
             self.assertTrue((target / "plan" / "athlete.json").is_file())
 
-    def test_incomplete_or_malformed_checkout_markers_do_not_block_unrelated_workspaces(self) -> None:
+    def test_incomplete_or_malformed_checkout_markers_do_not_block_unrelated_workspaces(
+        self,
+    ) -> None:
         cases = {
             "malformed plugin manifest": lambda checkout: (
                 checkout / ".codex-plugin" / "plugin.json"
@@ -241,6 +334,7 @@ class ConfigAndInitTest(unittest.TestCase):
             ".env",
             ".codex/cache/",
             "derived/.cache/",
+            "plan/.history/",
             "strava/details/",
             "strava/laps/",
             "strava/streams/",
@@ -270,6 +364,7 @@ class ConfigAndInitTest(unittest.TestCase):
         self.assertIn("custom-private-path/", first)
         self.assertEqual(first.count(".codex/cache/"), 1)
         self.assertEqual(first.count("derived/.cache/"), 1)
+        self.assertEqual(first.count("plan/.history/"), 1)
         self.assertEqual(first.count("integrations/"), 1)
         self.assertEqual(second, first)
 
@@ -318,7 +413,9 @@ class ConfigAndInitTest(unittest.TestCase):
                 measurement_draft.read_text(encoding="utf-8"),
             )
 
-    def test_goal_file_update_restores_first_file_when_second_write_fails(self) -> None:
+    def test_goal_file_update_records_partial_failure_for_explicit_restore(self) -> None:
+        from gradient_ascent import coaching_history
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             _init_workspace(workspace, force=False)
@@ -326,18 +423,19 @@ class ConfigAndInitTest(unittest.TestCase):
             measurement_path = workspace / "plan" / "goal_measurement.py"
             original_goals = goals_path.read_text(encoding="utf-8")
             original_measurement = measurement_path.read_text(encoding="utf-8")
-            failed = False
+            writes = 0
+            original_write = coaching_history._write_target
 
-            def fail_second_write(path: Path, content: str) -> None:
-                nonlocal failed
-                if path == measurement_path and not failed:
-                    failed = True
+            def fail_second_write(root_fd, path, content):
+                nonlocal writes
+                writes += 1
+                if writes == 2:
                     raise OSError("injected measurement write failure")
-                storage_write_text(path, content)
+                return original_write(root_fd, path, content)
 
             with (
-                patch("gradient_ascent.cli.write_text", side_effect=fail_second_write),
-                self.assertRaisesRegex(OSError, "injected measurement write failure"),
+                patch.object(coaching_history, "_write_target", side_effect=fail_second_write),
+                self.assertRaisesRegex(RuntimeError, "recovery"),
             ):
                 _install_goal_files(
                     workspace,
@@ -345,6 +443,14 @@ class ConfigAndInitTest(unittest.TestCase):
                     measurement="def build_progress(context):\n    return {}\n",
                 )
 
+            change = coaching_history.plan_history(workspace)[-1]
+            self.assertEqual(change["status"], "recovery_required")
+            self.assertNotEqual(measurement_path.read_text(encoding="utf-8"), original_measurement)
+            self.assertEqual(goals_path.read_text(encoding="utf-8"), original_goals)
+            restored = coaching_history.recover_plan_change(
+                workspace, change["id"], action="restore"
+            )
+            self.assertEqual(restored["status"], "restored")
             self.assertEqual(goals_path.read_text(encoding="utf-8"), original_goals)
             self.assertEqual(
                 measurement_path.read_text(encoding="utf-8"),

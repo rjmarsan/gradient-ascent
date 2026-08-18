@@ -1,0 +1,30 @@
+{
+  "kind": "proposal",
+  "scopes": [
+    {
+      "kind": "week",
+      "start_date": "2026-04-06",
+      "end_date": "2026-04-12"
+    },
+    {
+      "kind": "day",
+      "start_date": "2026-04-08",
+      "end_date": "2026-04-08"
+    }
+  ],
+  "title": "Consider a recovery-day substitution",
+  "body": "Synthetic example only: consider replacing Wednesday's hard session with an easy recovery ride. The rider has not approved or applied this change.",
+  "rationale": "Keep an unresolved coaching option available for the next conversation without changing the official plan.",
+  "idempotency_key": "synthetic-recovery-proposal-v1",
+  "conditions": [
+    "Review current recovery and the upcoming priority event before deciding.",
+    "Applying the change requires separate explicit approval."
+  ],
+  "evidence": [
+    {
+      "kind": "weekly_summary",
+      "ref": "2026-04-06",
+      "summary": "Review the compact recorded-load summary and its completeness."
+    }
+  ]
+}

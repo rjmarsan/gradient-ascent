@@ -11,10 +11,18 @@ into the public Gradient Ascent checkout or publish this workspace.
 Use `$coach-advice` for training questions, `$gradient-ascent-goals` to refine your
 priorities, and `$coach-note` when you want an approved insight saved. The Training
 Center's **Ask Coach** button opens a new conversation in this same private folder.
+Ask `$coach-note` to recall earlier decisions or save an approved session takeaway.
+Use `coaching-context` for dated private context and `plan-history` for changes that
+actually applied. Saving a note never applies a training-plan change; those need
+separate approval and the appropriate plan writer.
+For an existing workspace, explicitly create a current-state baseline with
+`init-plan-history`; add `--install-guidance` only when you want the reviewed
+recall/capture section appended without replacing custom `AGENTS.md` instructions.
 
 ## Layout
 
 - `plan/`: profile, goals, events, plan, notes, equipment, and corrections.
+- `plan/.history/`: private coaching journal and recoverable plan-change snapshots.
 - `connections/`: non-secret local import and enabled-sync configuration.
 - `strava/`: activity index, laps, and streams.
 - `recordings/`: normalized activities, laps, and streams from loose FIT, TCX, or GPX files.
@@ -70,3 +78,5 @@ The Training Center binds to localhost. Use the URL it prints and verify `/api/h
 Drag loose FIT, TCX, or GPX ride files anywhere on the Training Center page to import them locally.
 
 This workspace may be versioned privately if the athlete chooses, but raw archives, GPS traces, health data, logs, and `.env` are ignored by default. Review every file before sharing or publishing any part of the workspace.
+The private `plan/.history/` journal and snapshots are also ignored by default and
+need an appropriate private local backup. Never publish them.

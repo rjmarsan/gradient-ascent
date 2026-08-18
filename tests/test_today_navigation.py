@@ -173,6 +173,9 @@ function updateWeekNavButtons() {}
 function renderWeekDay() {}
 function bindWeekCards() {}
 function bindSeasonHorizon() {}
+function coachingDisclosureState() { return new Set(); }
+function restoreCoachingDisclosures() {}
+function renderCoachingContext() { return ''; }
 function requestAnimationFrame() {}
 function syncWeekIntervalLists() {}
 """

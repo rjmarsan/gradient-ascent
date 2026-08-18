@@ -531,22 +531,24 @@ class TSSBudgetsTest(unittest.TestCase):
             self.assertEqual([path.name for path in root.iterdir()], ["sentinel"])
 
     def test_check_to_write_race_still_targets_pinned_old_plan_directory(self):
-        from gradient_ascent import tss_budgets
+        from gradient_ascent import coaching_history, tss_budgets
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             old = root.with_name("old")
             setup(root)
             draft = write_draft(Path(tmp) / "draft.json", [draft_entry()])
-            write = tss_budgets._write
+            write = coaching_history._write_target
 
-            def replace_before_write(directory, name, body, limit):
+            def replace_before_write(directory, name, body):
                 root.rename(old)
                 root.mkdir(mode=0o700)
                 (root / "sentinel").write_text("replacement")
-                return write(directory, name, body, limit)
+                return write(directory, name, body)
 
-            with mock.patch.object(tss_budgets, "_write", side_effect=replace_before_write):
+            with mock.patch.object(
+                coaching_history, "_write_target", side_effect=replace_before_write
+            ):
                 with self.assertRaisesRegex(RuntimeError, "generation changed"):
                     tss_budgets.update_tss_budgets(root, draft)
             self.assertEqual([path.name for path in root.iterdir()], ["sentinel"])

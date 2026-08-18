@@ -75,6 +75,12 @@ the same private athlete workspace. Saved coach notes can link back to the
 conversation where an insight originated. Plugin skills become available in a new
 Codex task after installation.
 
+For cross-conversation recall, ask `$coach-note` what was previously decided or ask
+it to save an approved takeaway. Private context can cover a day, week, month, or
+season; official plan history separately records changes that actually applied.
+Saving a proposal or decision never changes the training plan. See
+[coaching context and plan history](docs/coaching-history.md).
+
 ## Manual quick start
 
 ```bash

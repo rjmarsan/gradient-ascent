@@ -236,6 +236,9 @@ const root={contains:node=>node===active,
 const document={activeElement:active,getElementById:()=>root};
 function renderSeasonHorizon(){return '';}
 function bindSeasonHorizon(){}
+function coachingDisclosureState(){return new Set();}
+function restoreCoachingDisclosures(){}
+function renderCoachingContext(){return '';}
 """
             + helpers
             + render

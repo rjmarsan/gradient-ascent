@@ -39,6 +39,14 @@ Use this skill for questions like:
 
 From the current private athlete workspace, gather only the smallest artifact set needed to answer the question. Prefer command output summaries over pasting large JSON blobs.
 
+Before material advice, use the workspace-local `coaching-context` command for the
+relevant dates and inspect `plan-history` when a past decision or plan change
+matters. Compare recalled observations, proposals, and decisions with the current
+canonical goals, plan, and budget status. A saved proposal is not an instruction;
+even an agreed decision is not evidence that it was applied. Call out unresolved or
+superseded choices instead of silently combining them. See the
+[coaching history guide](https://github.com/rjmarsan/gradient-ascent/blob/main/docs/coaching-history.md).
+
 For schedule, freshness, and recovery questions, start with:
 
 ```bash
@@ -160,6 +168,12 @@ Default user-facing format:
 3. `Questions that would change the call:` followed by 3-5 flat bullets.
 
 If the user asks "what did each advisor say?", add a brief advisor-by-advisor summary after the main recommendation. Do not lead with raw subagent output by default.
+
+At a natural wrap-up, offer to save a short takeaway only when it will help a future
+coaching session. Use `$coach-note` if the rider requests or approves capture; an
+existing explicit capture preference can cover that checkpoint. Keep unanswered
+questions and unapproved plan changes labeled as proposals. Saving context never
+authorizes applying the plan.
 
 ## Fallbacks
 

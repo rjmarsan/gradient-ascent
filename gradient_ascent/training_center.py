@@ -15,6 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .activity_titles import is_placeholder_title, select_activity_title
+from .coaching_context import build_coaching_context
 from .coach_notes import coach_notes_by_date
 from .dashboard_labels import day_labels_by_date, ride_annotations_by_id
 from .planned_load import (
@@ -1861,6 +1862,48 @@ HTML_TEMPLATE = """<!doctype html>
     .coach-note-card .activity-meta span {
       white-space: normal;
     }
+
+    .coaching-context { min-width: 0; border-top: 1px solid rgba(37, 67, 50, .14); color: #294735; }
+    .coaching-context > summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 13px 17px; cursor: pointer; list-style: none; }
+    .coaching-context > summary::-webkit-details-marker { display: none; }
+    .coaching-context > summary > span { font: 650 .62rem "SFMono-Regular", Consolas, monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .coaching-context > summary > small { color: #77796f; font-size: .66rem; text-align: right; }
+    .coaching-context > summary > small::after { content: " +"; padding-left: 5px; }
+    .coaching-context[open] > summary > small::after { content: " −"; }
+    .coaching-context > summary:focus-visible { outline: 2px solid #547b60; outline-offset: -3px; }
+    .coaching-context-body { display: grid; gap: 13px; padding: 0 17px 17px; min-width: 0; }
+    .coaching-context-group { display: grid; gap: 7px; min-width: 0; }
+    .coaching-context-group > h4 { margin: 0 0 2px; font: 650 .56rem "SFMono-Regular", Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; color: #77796f; }
+    .coaching-context-card { min-width: 0; display: grid; gap: 6px; border-left: 2px solid #b8c6ae; padding: 10px 12px; background: rgba(107, 132, 96, .045); }
+    .coaching-change-card { border-left-color: #bc947e; }
+    .coaching-context-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+    .coaching-context-card-head > strong { min-width: 0; font-size: .84rem; line-height: 1.35; overflow-wrap: anywhere; }
+    .coaching-context-card a, .coaching-context-recall { color: #315d45; font-size: .64rem; text-underline-offset: 3px; overflow-wrap: anywhere; }
+    .coaching-context-card-head > a { flex: 0 0 auto; }
+    .coaching-context-meta, .coaching-context-evidence { margin: 0; color: #77796f; font: .57rem/1.55 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
+    .coaching-context-copy, .coaching-context-empty, .coaching-context-warning { margin: 0; font-size: .73rem; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-line; }
+    .coaching-context-copy > span { font-weight: 650; }
+    .coaching-context-empty { color: #77796f; }
+    .coaching-context-warning { color: #96553d; }
+    .coaching-context-conditions { margin: 0; padding-left: 18px; font-size: .7rem; line-height: 1.5; overflow-wrap: anywhere; }
+    .coaching-context-recall { justify-self: start; }
+    .coaching-context.compact > summary { padding: 4px 0; flex-wrap: wrap; gap: 4px 10px; }
+    .coaching-context.compact .coaching-context-body { padding: 9px 0 0; }
+    .coaching-context.compact .coaching-context-card { padding: 8px; }
+    .month-card > .coaching-context { margin-top: 10px; }
+    #season-overview > .coaching-context { border-bottom: 1px solid rgba(37, 67, 50, .12); }
+    body.primary-shell .coach-rail .coaching-context { color: #eef1e7; border-top: 0; }
+    body.primary-shell .coach-rail .coaching-context > summary > small,
+    body.primary-shell .coach-rail .coaching-context-meta,
+    body.primary-shell .coach-rail .coaching-context-evidence,
+    body.primary-shell .coach-rail .coaching-context-empty,
+    body.primary-shell .coach-rail .coaching-context-group > h4 { color: rgba(225, 234, 216, .62); }
+    body.primary-shell .coach-rail .coaching-context-card { background: rgba(255, 255, 255, .035); border-left-color: #8aa481; }
+    body.primary-shell .coach-rail .coaching-context-card a,
+    body.primary-shell .coach-rail .coaching-context-recall { color: #e5ecdb; }
+    body.primary-shell .coach-rail .coaching-context-warning { color: #e5b39c; }
+    body.primary-shell .coach-rail .coaching-context-copy,
+    body.primary-shell .coach-rail .coaching-context-conditions { font-size: .64rem; }
 
     .activity-meta {
       display: flex;
@@ -7804,7 +7847,7 @@ HTML_TEMPLATE = """<!doctype html>
       week.activityDetailsLoaded = false;
     }
     const ACTIVITY_DETAIL_LOADS = new Map();
-    const COACH_CONVERSATION_PROMPT = "Use $coach-advice to review my training, recovery, goals, and upcoming plans, then tell me what to do next.";
+    const COACH_CONVERSATION_PROMPT = "Use $coach-advice to review my training, recovery, goals, and upcoming plans, then tell me what to do next. Recall saved coaching context and official plan history before advising. If we reach a useful lasting conclusion, offer to save a concise coaching note. Do not apply plan changes without my approval.";
     const NOTES_API = "./api/daily-notes";
     const SYNC_API = "./api/sync";
     const CONNECTIONS_API = "./api/connections";
@@ -8275,6 +8318,120 @@ HTML_TEMPLATE = """<!doctype html>
         if (signals.coachNote) stats.coachNoteDays += 1;
       }
       return stats;
+    }
+
+    function coachingScopeOverlaps(scopes, start, end, globalWhenEmpty = false) {
+      if (!Array.isArray(scopes) || !scopes.length) return globalWhenEmpty;
+      return scopes.some((scope) => scope && typeof scope.start_date === "string" && typeof scope.end_date === "string" && scope.start_date <= end && scope.end_date >= start);
+    }
+
+    function coachingContextForRange(start, end) {
+      const context = DATA.coachingContext || {};
+      const entries = (Array.isArray(context.entries) ? context.entries : [])
+        .filter((entry) => entry && coachingScopeOverlaps(entry.scopes, start, end));
+      const changes = (Array.isArray(context.plan_changes) ? context.plan_changes : [])
+        .filter((change) => change && change.kind !== "baseline" && coachingScopeOverlaps(change.scopes, start, end, true));
+      let legacy = Array.isArray(context.legacy_notes) ? context.legacy_notes : [];
+      if (!DATA.coachingContext && DATA.coachNotes) {
+        legacy = Object.values(DATA.coachNotes).flat().map((note) => ({ ...note, body: note.note || "" }));
+      }
+      legacy = legacy.filter((note) => note && typeof note.date === "string" && note.date >= start && note.date <= end);
+      const byNewest = (left, right) => String(right.created_at || right.date || "").localeCompare(String(left.created_at || left.date || ""));
+      return { entries: [...entries].sort(byNewest), changes: [...changes].sort(byNewest), legacy: [...legacy].sort(byNewest), history: context.history || {}, summary: context.summary || {} };
+    }
+
+    function coachingThreadLink(item) {
+      const thread = String(item?.thread_id || item?.codex_thread_id || "");
+      if (/^[A-Za-z0-9_-]{1,128}$/.test(thread)) return `codex://threads/${thread}`;
+      const url = String(item?.codex_url || "");
+      const prefix = "codex://threads/";
+      return url.startsWith(prefix) && /^[A-Za-z0-9_-]{1,128}$/.test(url.slice(prefix.length)) ? url : "";
+    }
+
+    function coachingScopeLabel(scopes) {
+      if (!Array.isArray(scopes) || !scopes.length) return "Whole plan";
+      const labels = [...new Set(scopes.map((scope) => ({ day: "Day", week: "Week", month: "Month", season: "Season" })[scope.kind]).filter(Boolean))];
+      return labels.join(" · ") || "Coaching context";
+    }
+
+    function coachingScopeDescription(scopes) {
+      if (!Array.isArray(scopes) || !scopes.length) return "Applies to the whole plan";
+      return scopes.map((scope) => `${coachingScopeLabel([scope])}: ${scope.start_date === scope.end_date ? scope.start_date : `${scope.start_date}–${scope.end_date}`}`).join("; ");
+    }
+
+    function renderCoachingEntry(entry, legacy = false) {
+      const label = legacy ? (entry.source === "daily-note" ? "Daily note" : "Earlier coach note") : ({ observation: "Observation", proposal: "Proposal", decision: "Agreed decision" })[entry.kind] || "Coach note";
+      const body = String(entry.body || entry.note || "");
+      const rationale = String(entry.rationale || "");
+      const conditions = Array.isArray(entry.conditions) ? entry.conditions : [];
+      const evidence = Array.isArray(entry.evidence) ? entry.evidence : [];
+      const link = coachingThreadLink(entry);
+      const saved = String(entry.created_at || entry.updated_at || entry.date || "").slice(0, 10);
+      const meta = [label, legacy ? "Day" : coachingScopeLabel(entry.scopes), entry.revision > 1 ? `Revision ${entry.revision}` : "", saved ? `Saved ${saved}` : ""].filter(Boolean);
+      return `<article class="coaching-context-card" data-coaching-entry="${escapeHtml(entry.id || "")}">
+        <div class="coaching-context-card-head"><strong>${escapeHtml(entry.title || "Coach note")}</strong>${link ? `<a href="${escapeHtml(link)}">Open task</a>` : ""}</div>
+        <p class="coaching-context-meta" title="${escapeHtml(legacy ? entry.date || "" : coachingScopeDescription(entry.scopes))}">${meta.map(escapeHtml).join(" · ")}</p>
+        ${body ? `<p class="coaching-context-copy">${escapeHtml(body)}</p>` : ""}
+        ${rationale && rationale !== body ? `<p class="coaching-context-copy"><span>Why:</span> ${escapeHtml(rationale)}</p>` : ""}
+        ${conditions.length ? `<ul class="coaching-context-conditions">${conditions.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul>` : ""}
+        ${evidence.length ? `<p class="coaching-context-evidence">${evidence.map((item) => escapeHtml(item.summary || `${String(item.kind || "Evidence").replaceAll("_", " ")}: ${item.ref || ""}`)).join(" · ")}</p>` : ""}
+      </article>`;
+    }
+
+    function renderCoachingChange(change) {
+      const labels = { applied: "Applied", restored: "Restored", failed: "Not applied", prepared: "Pending verification", recovery_required: "Recovery needed" };
+      const status = labels[change.status] || "Needs review";
+      const names = Array.isArray(change.files) ? change.files : [];
+      const link = coachingThreadLink(change);
+      const command = `plan-history --details ${change.id || ""}`;
+      return `<article class="coaching-context-card coaching-change-card" data-plan-change="${escapeHtml(change.id || "")}">
+        <div class="coaching-context-card-head"><strong>${escapeHtml(change.title || "Plan change")}</strong>${link ? `<a href="${escapeHtml(link)}">Open task</a>` : ""}</div>
+        <p class="coaching-context-meta" title="${escapeHtml(coachingScopeDescription(change.scopes))}">${escapeHtml(status)} · ${escapeHtml(coachingScopeLabel(change.scopes))} · ${escapeHtml(String(change.created_at || change.date || "").slice(0, 10))}</p>
+        <p class="coaching-context-copy">${escapeHtml(change.rationale || change.reason || "No coaching rationale was supplied.")}</p>
+        ${names.length ? `<p class="coaching-context-evidence">${names.map(escapeHtml).join(" · ")}</p>` : ""}
+        <a class="coaching-context-detail" title="${escapeHtml(command)}" href="${escapeHtml(codexThreadUrl(`Read the private ${command} record and explain what changed and why. Do not change the training plan.`))}">Review exact change</a>
+      </article>`;
+    }
+
+    function renderCoachingContext(start, end, options = {}) {
+      const context = coachingContextForRange(start, end);
+      const label = options.label || "Coach context";
+      const key = options.key || `${start}-${end}`;
+      const maxItems = options.compact ? 4 : 10;
+      const noteCount = context.entries.length + context.legacy.length;
+      const changeCount = context.changes.length;
+      const unavailable = context.history.available === false;
+      const loadedHistoryTruncated = context.summary.truncated === true;
+      const count = unavailable ? "Unavailable" : [noteCount ? `${noteCount} note${noteCount === 1 ? "" : "s"}` : "", changeCount ? `${changeCount} change${changeCount === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ") || (loadedHistoryTruncated ? "Not in loaded history" : "No saved context");
+      const command = `coaching-context --start ${start} --end ${end}`;
+      const prompt = `Use the private ${command} command and relevant plan-history records to recall the coaching decisions for this period. Explain the reasons and any open questions. Do not change the training plan.`;
+      const notes = [...context.entries.map((entry) => ({ entry, legacy: false })), ...context.legacy.map((entry) => ({ entry, legacy: true }))]
+        .sort((left, right) => String(right.entry.created_at || right.entry.date || "").localeCompare(String(left.entry.created_at || left.entry.date || "")));
+      const clipped = notes.length > maxItems || changeCount > maxItems || loadedHistoryTruncated;
+      const baseline = String(context.history.baseline_created_at || "").slice(0, 10);
+      return `<details class="coaching-context${options.compact ? " compact" : ""}" data-coaching-context="${escapeHtml(key)}"${options.open ? " open" : ""}>
+        <summary><span>${escapeHtml(label)}</span><small>${escapeHtml(count)}</small></summary>
+        <div class="coaching-context-body">
+          ${unavailable ? '<p class="coaching-context-warning">Coaching history unavailable. Check the local journal before making more plan changes.</p>' : ""}
+          ${context.history.recovery_required ? '<p class="coaching-context-warning">A plan change needs recovery review. New plan changes are paused.</p>' : ""}
+          ${context.history.drift?.drifted_count ? '<p class="coaching-context-warning">Some plan files changed outside the official history. Review the current plan before relying on older decisions.</p>' : ""}
+          ${!unavailable && !noteCount && !changeCount ? `<p class="coaching-context-empty">${loadedHistoryTruncated ? "Recall this period for older context that is not in the loaded history." : "No coaching context saved for this period yet."}</p>` : ""}
+          ${notes.length ? `<div class="coaching-context-group"><h4>Notes and decisions</h4>${notes.slice(0, maxItems).map(({ entry, legacy }) => renderCoachingEntry(entry, legacy)).join("")}</div>` : ""}
+          ${changeCount ? `<div class="coaching-context-group"><h4>Official plan history</h4>${context.changes.slice(0, maxItems).map(renderCoachingChange).join("")}</div>` : ""}
+          ${clipped && (noteCount || changeCount) ? '<p class="coaching-context-empty">Showing recent context. Recall this period in the coach for the full history.</p>' : ""}
+          ${baseline ? `<p class="coaching-context-empty">History started ${escapeHtml(baseline)}. Earlier decisions were not backfilled.</p>` : ""}
+          <a class="coaching-context-recall" title="${escapeHtml(command)}" href="${escapeHtml(codexThreadUrl(prompt))}">Recall this period in coach <span aria-hidden="true">↗</span></a>
+        </div>
+      </details>`;
+    }
+
+    function coachingDisclosureState(root) {
+      return new Set(Array.from(root?.querySelectorAll?.("details[data-coaching-context][open]") || []).map((item) => item.dataset.coachingContext));
+    }
+
+    function restoreCoachingDisclosures(root, opened) {
+      if (!opened) return;
+      root?.querySelectorAll?.("details[data-coaching-context]").forEach((item) => { if (opened.has(item.dataset.coachingContext)) item.open = true; });
     }
 
     function coachNotesForDay(day) {
@@ -9033,6 +9190,16 @@ HTML_TEMPLATE = """<!doctype html>
       return `codex://new?${query.toString()}`;
     }
 
+    function updateCoachConversationLink() {
+      const button = document.getElementById("ask-coach-button");
+      if (!button) return;
+      const week = weekForDate(state.selectedDate);
+      const start = week?.start_date || state.selectedDate;
+      const end = week?.end_date || state.selectedDate;
+      const context = start && end ? ` Selected day: ${state.selectedDate}. Start with coaching-context --start ${start} --end ${end}.` : "";
+      button.href = codexThreadUrl(COACH_CONVERSATION_PROMPT + context);
+    }
+
     function renderTodayTabLabel() {
       const todayTab = document.querySelector(".today-tab");
       const todayLabel = todayAnchorLabel();
@@ -9073,6 +9240,8 @@ HTML_TEMPLATE = """<!doctype html>
 
     function renderCalendar() {
       renderSeasonOverview();
+      const calendarRoot = document.getElementById("calendar-grid");
+      const openedContext = coachingDisclosureState(calendarRoot);
       const grouped = new Map();
       const visibleDays = DATA.days.filter((day) => day.date.slice(0, 4) === state.calendarYear);
       for (const day of visibleDays) {
@@ -9081,7 +9250,8 @@ HTML_TEMPLATE = """<!doctype html>
         grouped.get(key).push(day);
       }
       const months = [...grouped.entries()].map(([key, days]) => renderMonth(key, days)).join("");
-      document.getElementById("calendar-grid").innerHTML = months;
+      calendarRoot.innerHTML = months;
+      restoreCoachingDisclosures(calendarRoot, openedContext);
       document.querySelectorAll(".calendar-day").forEach((button) => {
         button.addEventListener("click", () => selectDate(button.dataset.date, { switchWeek: true, openRide: true }));
       });
@@ -9099,11 +9269,14 @@ HTML_TEMPLATE = """<!doctype html>
       if (!root) return;
       const focus = seasonFocusKey(root);
       const eventsOpen = root.querySelector(".season-event-list")?.open === true;
+      const openedContext = coachingDisclosureState(root);
       const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || null;
-      root.innerHTML = renderSeasonHorizon(week, { scope: "calendar", year: state.calendarYear });
+      root.innerHTML = renderSeasonHorizon(week, { scope: "calendar", year: state.calendarYear })
+        + renderCoachingContext(`${state.calendarYear}-01-01`, `${state.calendarYear}-12-31`, { key: `season-${state.calendarYear}`, label: "Season coaching context" });
       const events = root.querySelector(".season-event-list");
       if (events && eventsOpen) events.open = true;
       bindSeasonHorizon(root.querySelector("[data-season-jump]"));
+      restoreCoachingDisclosures(root, openedContext);
       restoreSeasonFocus(root, focus);
     }
 
@@ -9114,7 +9287,9 @@ HTML_TEMPLATE = """<!doctype html>
         ...(DATA.days || []).map((day) => day.date),
         ...(DATA.weeks || []).flatMap((week) => [week.start_date, week.end_date]),
         ...(DATA.phases || []).flatMap((phase) => [phase.start_date, phase.end_date]),
-        ...(DATA.events || []).map((event) => event.date)
+        ...(DATA.events || []).map((event) => event.date),
+        ...(DATA.coachingContext?.entries || []).flatMap((entry) => (entry.scopes || []).flatMap((scope) => [scope.start_date, scope.end_date])),
+        ...(DATA.coachingContext?.plan_changes || []).flatMap((change) => (change.scopes || []).flatMap((scope) => [scope.start_date, scope.end_date]))
       ];
       const years = [...new Set(dates.filter((value) => typeof value === "string" && /^[0-9]{4}-/.test(value)).map((value) => value.slice(0, 4)))].sort().reverse();
       if (!years.length) years.push(TODAY.slice(0, 4));
@@ -9127,6 +9302,7 @@ HTML_TEMPLATE = """<!doctype html>
 
     function renderMonth(key, days) {
       const first = utcDate(`${key}-01`);
+      const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
       const blanks = (first.getUTCDay() + 6) % 7;
       const rows = buildMonthRows(days, blanks);
       const stats = monthStats(days);
@@ -9149,6 +9325,7 @@ HTML_TEMPLATE = """<!doctype html>
           <div class="month-rows">
             ${rows.map(renderMonthWeekRow).join("")}
           </div>
+          ${renderCoachingContext(`${key}-01`, last, { key: `month-${key}`, label: "Month coaching context" })}
         </article>`;
     }
 
@@ -9449,8 +9626,7 @@ HTML_TEMPLATE = """<!doctype html>
     function renderCoachRailNotes(day) {
       return `
         <section class="rail-coach-notes">
-          <h4>Coach notes</h4>
-          ${renderCoachNotes(day)}
+          ${renderCoachingContext(day.date, day.date, { key: `rail-${day.date}`, label: "Coach context", compact: true })}
         </section>`;
     }
 
@@ -9459,6 +9635,7 @@ HTML_TEMPLATE = """<!doctype html>
       const contextLabel = document.getElementById("coach-day-context-label");
       const content = document.getElementById("coach-rail-content");
       if (!label || !content) return;
+      const openedContext = coachingDisclosureState(content);
       const day = dayByDate(state.selectedDate);
       if (!day) {
         label.textContent = "No day selected";
@@ -9466,6 +9643,7 @@ HTML_TEMPLATE = """<!doctype html>
         return;
       }
       const week = weekForDate(day.date) || {};
+      updateCoachConversationLink();
       renderCoachPresence(day, week);
       const metrics = day.metrics || {};
       const primary = primaryActivity(day);
@@ -9531,6 +9709,7 @@ HTML_TEMPLATE = """<!doctype html>
             ${renderCoachRailExpandedDetail(day)}
           </div>
         </details>`;
+      restoreCoachingDisclosures(content, openedContext);
       bindCoachRailNote();
       const previous = document.getElementById("previous-day");
       const todayButton = document.getElementById("jump-to-today");
@@ -10049,7 +10228,10 @@ HTML_TEMPLATE = """<!doctype html>
       const root = document.getElementById("month-rail");
       const selected = dayByDate(state.selectedDate);
       if (!root || !selected) return;
+      const openedContext = coachingDisclosureState(root);
       const key = monthKey(selected.date);
+      const first = utcDate(`${key}-01`);
+      const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
       const days = DATA.days.filter((day) => monthKey(day.date) === key);
       const upcomingEvents = DATA.days
         .flatMap((day) => (day.events || []).filter((event) => !eventIsSkipped(event)).map((event) => ({ day, event })))
@@ -10103,7 +10285,9 @@ HTML_TEMPLATE = """<!doctype html>
               }).join("")}
             </div>
           </div>
-        </div>`;
+        </div>
+        ${renderCoachingContext(`${key}-01`, last, { key: `month-rail-${key}`, label: "Month coaching context" })}`;
+      restoreCoachingDisclosures(root, openedContext);
       root.querySelectorAll("[data-month-date]").forEach((button) => {
         button.addEventListener("click", () => selectDate(button.dataset.monthDate, { switchWeek: true, openRide: true }));
       });
@@ -10797,6 +10981,7 @@ HTML_TEMPLATE = """<!doctype html>
     function renderWeek() {
       const weekRoot = document.getElementById("week-list");
       const horizonFocus = seasonFocusKey(weekRoot);
+      const openedContext = coachingDisclosureState(weekRoot);
       const week = DATA.weeks.find((item) => item.start_date === state.selectedWeekStart) || DATA.weeks[0];
       if (!week) {
         const rider = String(DATA.athlete?.display_name || "Your").trim();
@@ -10910,12 +11095,14 @@ HTML_TEMPLATE = """<!doctype html>
               </div>
             </aside>
           </div>
+          ${renderCoachingContext(week.start_date, week.end_date, { key: `week-${week.start_date}`, label: "Week coaching context" })}
           <div class="week-days">
             ${week.days.map(renderWeekDay).join("")}
           </div>
         </article>`;
       bindWeekCards();
       bindSeasonHorizon();
+      restoreCoachingDisclosures(weekRoot, openedContext);
       restoreSeasonFocus(weekRoot, horizonFocus);
       requestAnimationFrame(syncWeekIntervalLists);
     }
@@ -11499,8 +11686,7 @@ HTML_TEMPLATE = """<!doctype html>
           ${summary}
         </section>
         <section class="sidebar-section">
-          <h4>Coach notes</h4>
-          ${renderCoachNotes(day)}
+          ${renderCoachingContext(day.date, day.date, { key: `ride-${day.date}`, label: "Day coaching context" })}
         </section>
         <section class="sidebar-section">
           <h4>Analysis</h4>
@@ -11528,7 +11714,10 @@ HTML_TEMPLATE = """<!doctype html>
       }
       sidebar.classList.add("open");
       sidebar.setAttribute("aria-hidden", "false");
-      document.getElementById("ride-sidebar-content").innerHTML = renderRideSidebarContent(day);
+      const content = document.getElementById("ride-sidebar-content");
+      const openedContext = coachingDisclosureState(content);
+      content.innerHTML = renderRideSidebarContent(day);
+      restoreCoachingDisclosures(content, openedContext);
     }
 
     function selectDate(value, options = {}) {
@@ -11764,6 +11953,7 @@ HTML_TEMPLATE = """<!doctype html>
     function bindGlobalControls() {
       const coachButton = document.getElementById("ask-coach-button");
       if (coachButton) coachButton.href = codexThreadUrl(COACH_CONVERSATION_PROMPT);
+      updateCoachConversationLink();
       document.getElementById("previous-day").addEventListener("click", () => moveDay(-1));
       document.getElementById("jump-to-today").addEventListener("click", () => {
         refreshCurrentDate();
@@ -13942,6 +14132,28 @@ def _dashboard_load_projection(
     return result
 
 
+def _coaching_dashboard_context(
+    data_dir: Path,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    try:
+        return build_coaching_context(data_dir, limit=1000), coach_notes_by_date(data_dir)
+    except (OSError, RuntimeError, ValueError):
+        # This optional view must not reset a malformed journal, expose its
+        # contents in an error, or hide the rest of the athlete's dashboard.
+        return {
+            "entries": [],
+            "plan_changes": [],
+            "legacy_notes": [],
+            "summary": {},
+            "history": {
+                "available": False,
+                "recovery_required": 0,
+                "unavailable_reason": "invalid_coaching_history",
+            },
+            "external_access": False,
+        }, {}
+
+
 def _build_payload(
     data_dir: Path,
 ) -> tuple[
@@ -14208,6 +14420,7 @@ def _build_payload(
         }
         weeks.append(week_record)
 
+    coaching_context, coach_notes = _coaching_dashboard_context(data_dir)
     payload = {
         "generatedAt": generated_at.isoformat(),
         "athlete": athlete if isinstance(athlete, dict) else {},
@@ -14219,7 +14432,8 @@ def _build_payload(
         "weeks": weeks,
         "days": days,
         "notes": _load_daily_notes(data_dir),
-        "coachNotes": coach_notes_by_date(data_dir),
+        "coachNotes": coach_notes,
+        "coachingContext": coaching_context,
         "goals": _goals_summary(data_dir),
         "onboarding": _read(data_dir / "plan" / "onboarding.json", {"choices": {}}),
         "workspacePath": str(data_dir.expanduser().resolve()),

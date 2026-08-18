@@ -1,7 +1,7 @@
 interface:
   display_name: "Coach Note"
-  short_description: "Save a durable coaching observation"
+  short_description: "Recall or save private coaching context"
   icon_small: "./assets/gradient-ascent.svg"
   icon_large: "./assets/gradient-ascent.svg"
   brand_color: "#2F6F4E"
-  default_prompt: "Use $coach-note to save the coaching insight from this ride or discussion."
+  default_prompt: "Use $coach-note to recall our relevant decisions and save the approved takeaway from this discussion."

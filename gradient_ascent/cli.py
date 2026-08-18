@@ -47,6 +47,7 @@ WORKSPACE_GITIGNORE = "\n".join(
         "*.log",
         ".codex/cache/",
         "derived/.cache/",
+        "plan/.history/",
         "",
         "# Raw GPS and health exports are intentionally opt-in for git.",
         "# Remove these lines only for a private raw-data archive.",
@@ -98,43 +99,93 @@ def _install_goal_files(
     *,
     goals: str,
     measurement: str | None,
-) -> list[str]:
-    updates = [(data_dir / "plan" / "goals.md", goals)]
+    history_request: dict[str, object] | None = None,
+    expected_identity: tuple[int, int] | None = None,
+) -> dict[str, object]:
+    from . import coaching_history, recording_repair
+    from .plan_changes import change_request, commit_plan_files, file_digest
+    from .workspace_lock import workspace_identity, workspace_lock
+
+    updates = {"plan/goals.md": goals.encode("utf-8")}
     if measurement is not None:
-        updates.append((data_dir / "plan" / "goal_measurement.py", measurement))
-    originals = {
-        path: path.read_text(encoding="utf-8") if path.exists() else None
-        for path, _content in updates
-    }
-    written: list[Path] = []
-    try:
-        for path, content in updates:
-            write_text(path, content)
-            written.append(path)
-    except Exception as exc:
-        rollback_errors: list[str] = []
-        for path in reversed(written):
-            try:
-                original = originals[path]
-                if original is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    write_text(path, original)
-            except Exception as rollback_exc:  # pragma: no cover - catastrophic filesystem failure.
-                rollback_errors.append(f"{path}: {rollback_exc}")
-        if rollback_errors:
-            raise RuntimeError(
-                "Goal update failed and could not fully restore the previous files: "
-                + "; ".join(rollback_errors)
-            ) from exc
-        raise
-    return [path.relative_to(data_dir).as_posix() for path, _content in updates]
+        updates["plan/goal_measurement.py"] = measurement.encode("utf-8")
+    identity = expected_identity if expected_identity is not None else workspace_identity(data_dir)
+    with workspace_lock(data_dir, expected_identity=identity):
+        expected = None
+        if coaching_history.history_write_available(data_dir):
+            with recording_repair._directory(data_dir) as root:
+                expected = {
+                    name: file_digest(coaching_history._read_target(root, name)) for name in updates
+                }
+                recording_repair._assert_generation(data_dir, root, identity)
+        result = commit_plan_files(
+            data_dir,
+            updates,
+            request=change_request(
+                "update-goals",
+                title="Revise coaching goals",
+                rationale="Applied reviewed goal files. No additional change rationale was supplied.",
+                supplied=history_request,
+            ),
+            expected_identity=identity,
+            expected_hashes=expected,
+            legacy_fallback=True,
+            retry_from_current=True,
+            inferred_scopes="scopes" not in (history_request or {}),
+        )
+        return {"updated": list(updates), "history": result}
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Gradient Ascent local cycling coach")
     subparsers = parser.add_subparsers(dest="command", required=True)
     provider_choices = provider_keys()
+
+    def history_flags(target):
+        target.add_argument("--reason", help="Explicit rationale for the official plan change")
+        target.add_argument("--decision-id", help="Existing coaching decision to link")
+        target.add_argument("--change-key", help="Stable idempotency key for safe retries")
+
+    initialize_history_parser = subparsers.add_parser(
+        "init-plan-history", help="Capture the present official plan as a private baseline"
+    )
+    initialize_history_parser.add_argument(
+        "--install-guidance",
+        action="store_true",
+        help="Append reviewed coaching-history guidance without replacing workspace instructions",
+    )
+    capture_parser = subparsers.add_parser(
+        "add-coaching-context", help="Capture a private observation, proposal, or decision"
+    )
+    capture_parser.add_argument("--file", required=True)
+    capture_parser.add_argument("--no-rebuild", action="store_true")
+    context_parser = subparsers.add_parser(
+        "coaching-context", help="Recall private coaching context"
+    )
+    context_parser.add_argument("--start")
+    context_parser.add_argument("--end")
+    context_parser.add_argument("--kind", choices=("observation", "proposal", "decision"))
+    context_parser.add_argument("--limit", type=int, default=50)
+    context_parser.add_argument("--revisions", action="store_true")
+    history_parser = subparsers.add_parser("plan-history", help="Inspect official plan changes")
+    history_parser.add_argument("--limit", type=int, default=50)
+    history_options = history_parser.add_mutually_exclusive_group()
+    history_options.add_argument("--details", metavar="ID")
+    history_options.add_argument("--fingerprints", action="store_true")
+    subparsers.add_parser(
+        "reconcile-plan-history", help="Classify interrupted changes without overwriting plan files"
+    )
+    recovery_parser = subparsers.add_parser(
+        "recover-plan-change", help="Explicitly finish or restore an interrupted plan change"
+    )
+    recovery_parser.add_argument("transaction_id")
+    recovery_parser.add_argument("--action", choices=("finish", "restore"), required=True)
+    recovery_parser.add_argument("--no-rebuild", action="store_true")
+    edit_parser = subparsers.add_parser(
+        "update-plan", help="Apply a reviewed, fingerprinted plan-edit draft"
+    )
+    edit_parser.add_argument("--file", required=True)
+    edit_parser.add_argument("--no-rebuild", action="store_true")
 
     init_parser = subparsers.add_parser(
         "init-data",
@@ -203,6 +254,7 @@ def _parse_args() -> argparse.Namespace:
     onboarding_profile_parser.add_argument("--weekly-availability")
     onboarding_profile_parser.add_argument("--constraint", action="append", dest="constraints")
     onboarding_profile_parser.add_argument("--sensor", action="append", dest="sensors")
+    history_flags(onboarding_profile_parser)
 
     onboarding_goals_parser = subparsers.add_parser(
         "onboarding-goals",
@@ -214,6 +266,7 @@ def _parse_args() -> argparse.Namespace:
     onboarding_goals_parser.add_argument("--success", required=True)
     onboarding_goals_parser.add_argument("--coaching-implication", required=True)
     onboarding_goals_parser.add_argument("--evidence", required=True)
+    history_flags(onboarding_goals_parser)
 
     onboarding_event_parser = subparsers.add_parser(
         "onboarding-event",
@@ -229,6 +282,7 @@ def _parse_args() -> argparse.Namespace:
         choices=("A", "B", "C"),
     )
     onboarding_event_parser.add_argument("--location")
+    history_flags(onboarding_event_parser)
 
     strava_import_parser = subparsers.add_parser(
         "import-strava-export",
@@ -269,6 +323,7 @@ def _parse_args() -> argparse.Namespace:
         "import-calendar", help="Import training calendar CSV/XLSX"
     )
     calendar_parser.add_argument("csv_path", help="Path to calendar CSV/XLSX")
+    history_flags(calendar_parser)
     calendar_parser.add_argument(
         "--out",
         default=None,
@@ -279,6 +334,7 @@ def _parse_args() -> argparse.Namespace:
         "build-plan", help="Convert calendar CSV/XLSX into coach plan schema"
     )
     plan_parser.add_argument("csv_path", help="Path to calendar CSV/XLSX")
+    history_flags(plan_parser)
     plan_parser.add_argument(
         "--out-dir",
         default=None,
@@ -289,6 +345,7 @@ def _parse_args() -> argparse.Namespace:
         "update-tss-budgets", help="Save explicit coach-authored weekly TSS budgets"
     )
     budget_update_parser.add_argument("--file", required=True, help="Version 1 budget draft JSON")
+    history_flags(budget_update_parser)
     budget_update_parser.add_argument(
         "--replace", action="store_true", help="Replace the complete coach-budget set"
     )
@@ -317,9 +374,15 @@ def _parse_args() -> argparse.Namespace:
     export_plan_parser.add_argument("--format", choices=("zip", "ics", "csv", "fit"), default="zip")
     export_plan_parser.add_argument("--start", help="First included date, YYYY-MM-DD")
     export_plan_parser.add_argument("--end", help="Last included date, YYYY-MM-DD")
-    export_plan_parser.add_argument("--workout", dest="workout_id", help="One explicit workout ID (required for FIT)")
-    export_plan_parser.add_argument("--out", help="Destination file (defaults to private exports/planned)")
-    export_plan_parser.add_argument("--overwrite", action="store_true", help="Allow replacing an existing different export")
+    export_plan_parser.add_argument(
+        "--workout", dest="workout_id", help="One explicit workout ID (required for FIT)"
+    )
+    export_plan_parser.add_argument(
+        "--out", help="Destination file (defaults to private exports/planned)"
+    )
+    export_plan_parser.add_argument(
+        "--overwrite", action="store_true", help="Allow replacing an existing different export"
+    )
 
     insights_parser = subparsers.add_parser(
         "build-insights", help="Merge supported local sources into summaries"
@@ -343,23 +406,55 @@ def _parse_args() -> argparse.Namespace:
         "refresh",
         help="Refresh explicitly enabled sources and rebuild derived workspace artifacts",
     )
-    refresh_parser.add_argument("--local-only", action="store_true", help="Rebuild local data without contacting Ride with GPS")
+    refresh_parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Rebuild local data without contacting Ride with GPS",
+    )
 
-    ride_parser = subparsers.add_parser("ride", help="Set up and use Ride with GPS's official ride CLI")
+    ride_parser = subparsers.add_parser(
+        "ride", help="Set up and use Ride with GPS's official ride CLI"
+    )
     ride_actions = ride_parser.add_subparsers(dest="ride_action", required=True)
-    ride_setup = ride_actions.add_parser("setup", help="Connect this workspace using vendor-owned sign-in")
-    ride_setup.add_argument("--install", action="store_true", help="Allow downloading the checksum-verified official ride CLI if missing")
-    ride_setup.add_argument("--executable", help="Optional independently installed official ride executable")
-    ride_setup.add_argument("--config-dir", help="Optional existing vendor-owned ride configuration directory")
-    ride_setup.add_argument("--days", type=int, help="Recent-sync lookback, 1–365 days (default 14)")
-    ride_setup.add_argument("--reauth", action="store_true", help="Explicitly choose the account again in your browser")
-    ride_actions.add_parser("status", help="Show offline connection status without contacting the provider")
+    ride_setup = ride_actions.add_parser(
+        "setup", help="Connect this workspace using vendor-owned sign-in"
+    )
+    ride_setup.add_argument(
+        "--install",
+        action="store_true",
+        help="Allow downloading the checksum-verified official ride CLI if missing",
+    )
+    ride_setup.add_argument(
+        "--executable", help="Optional independently installed official ride executable"
+    )
+    ride_setup.add_argument(
+        "--config-dir", help="Optional existing vendor-owned ride configuration directory"
+    )
+    ride_setup.add_argument(
+        "--days", type=int, help="Recent-sync lookback, 1–365 days (default 14)"
+    )
+    ride_setup.add_argument(
+        "--reauth", action="store_true", help="Explicitly choose the account again in your browser"
+    )
+    ride_actions.add_parser(
+        "status", help="Show offline connection status without contacting the provider"
+    )
     ride_actions.add_parser("check", help="Explicitly verify the vendor-owned sign-in and account")
-    ride_sync = ride_actions.add_parser("sync", help="Import a bounded batch of rides and rebuild once")
+    ride_sync = ride_actions.add_parser(
+        "sync", help="Import a bounded batch of rides and rebuild once"
+    )
     ride_sync.add_argument("--days", type=int, help="Override recent lookback for this sync")
-    ride_sync.add_argument("--history", action="store_true", help="Import the next resumable full-history batch")
-    ride_sync.add_argument("--restart-history", action="store_true", help="Restart a history scan from page one; existing rides are deduplicated")
-    ride_actions.add_parser("disable", help="Stop future sync without deleting rides or the vendor's sign-in")
+    ride_sync.add_argument(
+        "--history", action="store_true", help="Import the next resumable full-history batch"
+    )
+    ride_sync.add_argument(
+        "--restart-history",
+        action="store_true",
+        help="Restart a history scan from page one; existing rides are deduplicated",
+    )
+    ride_actions.add_parser(
+        "disable", help="Stop future sync without deleting rides or the vendor's sign-in"
+    )
 
     serve_training_center_parser = subparsers.add_parser(
         "serve-training-center",
@@ -392,6 +487,7 @@ def _parse_args() -> argparse.Namespace:
     coach_note_parser.add_argument("--activity-name", help="Optional Strava activity title")
     coach_note_parser.add_argument("--tags", help="Optional comma-separated tags")
     coach_note_parser.add_argument("--codex-thread-id", help="Optional Codex thread id")
+    coach_note_parser.add_argument("--idempotency-key", help="Stable coaching-note capture key")
     coach_note_parser.add_argument(
         "--codex-url",
         help="Optional Codex thread URL using codex://threads/<thread-id>",
@@ -406,6 +502,7 @@ def _parse_args() -> argparse.Namespace:
         "update-goal-files",
         help="Safely update authored goal files and rebuild the training center",
     )
+    history_flags(goal_update_parser)
     goal_update_parser.add_argument(
         "--goals-file",
         required=True,
@@ -483,12 +580,15 @@ def _parse_args() -> argparse.Namespace:
     )
     connections_test_parser.add_argument("provider", choices=provider_choices)
 
-
     args = parser.parse_args()
-    if args.command == "ride" and args.ride_action == "sync" and args.restart_history and not args.history:
+    if (
+        args.command == "ride"
+        and args.ride_action == "sync"
+        and args.restart_history
+        and not args.history
+    ):
         parser.error("--restart-history requires --history")
     return args
-
 
 
 def _write_json_if_missing(path: Path, payload: object) -> None:
@@ -504,6 +604,8 @@ def _write_text_if_missing(path: Path, text: str) -> None:
 
 
 def _copy_starter_templates(workspace_dir: Path, *, force: bool) -> dict[str, object]:
+    from .coaching_history import ALLOWED_PLAN_FILES
+
     template_dir = Path(__file__).resolve().parent / "workspace_templates"
     if not template_dir.exists():
         raise SystemExit(
@@ -521,7 +623,9 @@ def _copy_starter_templates(workspace_dir: Path, *, force: bool) -> dict[str, ob
         if source.is_dir():
             target.mkdir(parents=True, exist_ok=True)
             continue
-        if target.exists() and not force:
+        if (target.exists() or target.is_symlink()) and (
+            not force or relative.as_posix() in ALLOWED_PLAN_FILES
+        ):
             skipped.append(str(relative))
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -531,7 +635,9 @@ def _copy_starter_templates(workspace_dir: Path, *, force: bool) -> dict[str, ob
 
 
 def _starter_template_text(relative: str) -> str:
-    return (Path(__file__).resolve().parent / "workspace_templates" / relative).read_text(encoding="utf-8")
+    return (Path(__file__).resolve().parent / "workspace_templates" / relative).read_text(
+        encoding="utf-8"
+    )
 
 
 def _ensure_workspace_env(workspace_dir: Path) -> dict[str, object]:
@@ -561,7 +667,7 @@ def _ensure_workspace_cli(workspace_dir: Path) -> dict[str, object]:
         "#!/bin/sh\n"
         f"export COACH_WORKSPACE_DIR={quoted_workspace}\n"
         f"cd {quoted_workspace} || exit 1\n"
-        f"exec {shlex.quote(sys.executable)} -m gradient_ascent.cli \"$@\"\n"
+        f'exec {shlex.quote(sys.executable)} -m gradient_ascent.cli "$@"\n'
     )
     if created or cli_path.read_text(encoding="utf-8") != content:
         cli_path.write_text(content, encoding="utf-8")
@@ -579,7 +685,7 @@ def _ensure_codex_environment(
         return {"path": str(environment_path), "created": False}
 
     environment_path.parent.mkdir(parents=True, exist_ok=True)
-    command = f'{shlex.quote(str(workspace_cli))} serve-training-center --port 8787'
+    command = f"{shlex.quote(str(workspace_cli))} serve-training-center --port 8787"
     environment_path.write_text(
         "\n".join(
             [
@@ -601,10 +707,21 @@ def _ensure_codex_environment(
     return {"path": str(environment_path), "created": True}
 
 
+def _require_resolved_plan_history(data_dir: Path) -> None:
+    history_dir = data_dir / "plan" / ".history"
+    if not history_dir.exists() and not history_dir.is_symlink():
+        return
+    from .coaching_history import coaching_history_summary
+
+    if coaching_history_summary(data_dir)["recovery_required"]:
+        raise RuntimeError("Plan history recovery is required before reinitializing the workspace.")
+
+
 def _init_workspace(workspace_dir: Path, *, force: bool) -> dict[str, object]:
     workspace_dir = ensure_private_data_dir(workspace_dir, action="initialize coach workspace")
     workspace_dir.parent.mkdir(parents=True, exist_ok=True)
     with _workspace_refresh_lock(workspace_dir, require_existing=False):
+        _require_resolved_plan_history(workspace_dir)
         workspace_dir.mkdir(parents=True, exist_ok=True)
         templates = _copy_starter_templates(workspace_dir, force=force)
         env = _ensure_workspace_env(workspace_dir)
@@ -628,6 +745,7 @@ def _init_data_dir(data_dir: Path) -> dict[str, object]:
     data_dir = ensure_private_data_dir(data_dir, action="initialize coach data")
     data_dir.parent.mkdir(parents=True, exist_ok=True)
     with _workspace_refresh_lock(data_dir, require_existing=False):
+        _require_resolved_plan_history(data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         try:
             data_dir.chmod(0o700)
@@ -707,7 +825,9 @@ def _init_data_dir_unlocked(data_dir: Path) -> dict[str, object]:
         data_dir / "plan" / "dashboard_labels.json",
         {"version": 1, "days": {}, "rides": {}},
     )
-    _write_json_if_missing(data_dir / "plan" / "context_markers.json", {"version": 1, "events": [], "markers": []})
+    _write_json_if_missing(
+        data_dir / "plan" / "context_markers.json", {"version": 1, "events": [], "markers": []}
+    )
     _write_json_if_missing(data_dir / "plan" / "garage.json", {"meta": {}, "bikes": []})
     _write_json_if_missing(data_dir / "strava" / "activities.json", {})
     _write_json_if_missing(data_dir / "recordings" / "activities.json", {})
@@ -715,11 +835,71 @@ def _init_data_dir_unlocked(data_dir: Path) -> dict[str, object]:
     _write_text_if_missing(data_dir / ".gitignore", WORKSPACE_GITIGNORE)
     ensure_text_line(data_dir / ".gitignore", ".codex/cache/")
     ensure_text_line(data_dir / ".gitignore", "derived/.cache/")
+    ensure_text_line(data_dir / ".gitignore", "plan/.history/")
     ensure_text_line(data_dir / ".gitignore", "integrations/")
     ensure_text_line(data_dir / ".gitignore", ".runtime/")
     ensure_text_line(data_dir / ".gitignore", "connections/ridewithgps.json")
     ensure_text_line(data_dir / ".gitignore", "exports/")
     return {"data_dir": str(data_dir), "mode": "empty"}
+
+
+def _history_metadata(args: argparse.Namespace) -> dict[str, object] | None:
+    result = {
+        target: value
+        for source, target in (
+            ("reason", "rationale"),
+            ("decision_id", "decision_id"),
+            ("change_key", "idempotency_key"),
+        )
+        if (value := getattr(args, source, None)) is not None
+    }
+    return result or None
+
+
+def _local_plan_rebuild(
+    data_dir: Path, identity: tuple[int, int], *, enabled: bool
+) -> dict[str, object]:
+    """Keep an applied source change separate from fallible derived rebuilding."""
+    if not enabled:
+        return {"rebuilt": False, "rebuild_status": "skipped"}
+    from .training_center import build_training_center
+    from .workspace_lock import workspace_lock
+
+    stage = "insights"
+    try:
+        calendar = data_dir / "calendar.json"
+        with workspace_lock(data_dir, expected_identity=identity):
+            build_insights(data_dir, calendar if calendar.exists() else None, data_dir / "derived")
+        stage = "dashboard"
+        with workspace_lock(data_dir, expected_identity=identity):
+            build_training_center(data_dir)
+        with workspace_lock(data_dir, expected_identity=identity):
+            pass
+    except Exception as exc:
+        error_type = (
+            type(exc).__name__
+            if type(exc).__name__
+            in {
+                "OSError",
+                "RuntimeError",
+                "ValueError",
+                "TypeError",
+                "KeyError",
+                "FileNotFoundError",
+                "PermissionError",
+            }
+            else "Error"
+        )
+        return {
+            "rebuilt": False,
+            "rebuild_status": "failed",
+            "rebuild_error": {"stage": stage, "type": error_type},
+        }
+    return {"rebuilt": True, "rebuild_status": "complete"}
+
+
+def _print_json(value: object) -> None:
+    print(json.dumps(value, separators=(",", ":"), sort_keys=True))
 
 
 def main() -> None:
@@ -757,6 +937,101 @@ def main() -> None:
 
     ensure_private_data_dir(config.data_dir, action=f"run {args.command}")
 
+    if args.command in {
+        "init-plan-history",
+        "add-coaching-context",
+        "coaching-context",
+        "plan-history",
+        "reconcile-plan-history",
+        "recover-plan-change",
+        "update-plan",
+    }:
+        from . import coaching_history
+        from .plan_changes import plan_file_fingerprints, read_private_draft, update_plan_from_draft
+        from .workspace_lock import workspace_identity, workspace_lock
+
+        try:
+            if args.command == "coaching-context":
+                from .coaching_context import build_coaching_context
+
+                result = build_coaching_context(
+                    config.data_dir,
+                    start=args.start,
+                    end=args.end,
+                    kind=args.kind,
+                    limit=args.limit,
+                    include_revisions=args.revisions,
+                )
+            elif args.command == "plan-history":
+                result = (
+                    coaching_history.plan_change_details(config.data_dir, args.details)
+                    if args.details
+                    else {
+                        "fingerprints": plan_file_fingerprints(config.data_dir),
+                        "drift": coaching_history.plan_history_drift(config.data_dir),
+                        "external_access": False,
+                    }
+                    if args.fingerprints
+                    else {
+                        "changes": coaching_history.plan_history(config.data_dir, limit=args.limit),
+                        "drift": coaching_history.plan_history_drift(config.data_dir),
+                        "external_access": False,
+                    }
+                )
+            else:
+                identity = workspace_identity(config.data_dir)
+                with workspace_lock(config.data_dir, expected_identity=identity):
+                    if args.command == "init-plan-history":
+                        result = coaching_history.initialize_plan_history(
+                            config.data_dir, expected_identity=identity
+                        )
+                        if args.install_guidance:
+                            from .workspace_guidance import install_coaching_history_guidance
+
+                            result["guidance"] = install_coaching_history_guidance(
+                                config.data_dir, expected_identity=identity
+                            )
+                    elif args.command == "add-coaching-context":
+                        result = coaching_history.capture_coaching_entry(
+                            config.data_dir,
+                            read_private_draft(Path(args.file)),
+                            expected_identity=identity,
+                        )
+                    elif args.command == "reconcile-plan-history":
+                        result = coaching_history.reconcile_plan_history(
+                            config.data_dir, expected_identity=identity
+                        )
+                    elif args.command == "recover-plan-change":
+                        result = coaching_history.recover_plan_change(
+                            config.data_dir,
+                            args.transaction_id,
+                            action=args.action,
+                            expected_identity=identity,
+                        )
+                    else:
+                        result = update_plan_from_draft(
+                            config.data_dir, Path(args.file), expected_identity=identity
+                        )
+                    result = {**result, "external_access": False}
+                    if args.command in {
+                        "add-coaching-context",
+                        "recover-plan-change",
+                        "update-plan",
+                    }:
+                        result.update(
+                            _local_plan_rebuild(
+                                config.data_dir, identity, enabled=not args.no_rebuild
+                            )
+                        )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        except (OSError, RuntimeError):
+            raise SystemExit(
+                "Coaching history action could not finish safely. Inspect plan history and retry."
+            ) from None
+        _print_json(result)
+        return
+
     if args.command in {"update-tss-budgets", "tss-budget-status"}:
         from .tss_budgets import (
             coach_daily_tss,
@@ -790,6 +1065,7 @@ def main() -> None:
                             Path(args.file),
                             replace=args.replace,
                             expected_identity=identity,
+                            history_request=_history_metadata(args),
                         )
                     except ValueError as exc:
                         # This schema-owned API uses controlled validation
@@ -797,26 +1073,15 @@ def main() -> None:
                         raise SystemExit(str(exc)) from None
                     result = {
                         **updated,
-                        "rebuilt": False,
+                        "status": updated.get("history", {}).get("status", "applied"),
                         "external_access": False,
                     }
-                    if not args.no_rebuild:
-                        from .training_center import build_training_center
-
-                        # Reproject the current source plan before rendering.
-                        # No configured imports or provider refresh is needed.
-                        calendar = config.data_dir / "calendar.json"
-                        with workspace_lock(config.data_dir, expected_identity=identity):
-                            build_insights(
-                                config.data_dir,
-                                calendar if calendar.exists() else None,
-                                config.data_dir / "derived",
-                            )
-                        with workspace_lock(config.data_dir, expected_identity=identity):
-                            build_training_center(config.data_dir)
-                        result["rebuilt"] = True
-                with workspace_lock(config.data_dir, expected_identity=identity):
-                    pass
+                    result.update(
+                        _local_plan_rebuild(config.data_dir, identity, enabled=not args.no_rebuild)
+                    )
+                if args.command == "tss-budget-status":
+                    with workspace_lock(config.data_dir, expected_identity=identity):
+                        pass
         except (OSError, RuntimeError, ValueError):
             raise SystemExit(
                 "TSS budget action could not finish safely. Check the workspace and retry."
@@ -863,8 +1128,15 @@ def main() -> None:
                 result = disable_ride(config.data_dir)
             elif args.ride_action == "setup":
                 allow_install = args.install
-                if not allow_install and not args.executable and sys.stdin.isatty() and not ride_status(config.data_dir)["installed"]:
-                    answer = input("Download the verified official Ride with GPS CLI into this private workspace? [y/N] ")
+                if (
+                    not allow_install
+                    and not args.executable
+                    and sys.stdin.isatty()
+                    and not ride_status(config.data_dir)["installed"]
+                ):
+                    answer = input(
+                        "Download the verified official Ride with GPS CLI into this private workspace? [y/N] "
+                    )
                     allow_install = answer.strip().lower() in {"y", "yes"}
 
                 def show_authorization_url(url: str) -> None:
@@ -882,15 +1154,23 @@ def main() -> None:
                 )
             else:
                 if not load_ride_settings(config.data_dir)["enabled"]:
-                    raise RideConnectionError("Run gradient-ascent ride setup before syncing rides.")
-                result = aggregate_refresh_result(refresh_configured_workspace(
-                    config.data_dir, ride_days=args.days, ride_history=args.history,
-                    restart_history=args.restart_history,
-                ))
+                    raise RideConnectionError(
+                        "Run gradient-ascent ride setup before syncing rides."
+                    )
+                result = aggregate_refresh_result(
+                    refresh_configured_workspace(
+                        config.data_dir,
+                        ride_days=args.days,
+                        ride_history=args.history,
+                        restart_history=args.restart_history,
+                    )
+                )
         except (RideCLIError, RideConnectionError) as exc:
             raise SystemExit(str(exc)) from None
         except (OSError, RuntimeError, ValueError):
-            raise SystemExit("Ride with GPS could not complete this action. Check the connection and retry.") from None
+            raise SystemExit(
+                "Ride with GPS could not complete this action. Check the connection and retry."
+            ) from None
         print(json.dumps(result, separators=(",", ":"), sort_keys=True))
         return
 
@@ -925,9 +1205,14 @@ def main() -> None:
                     weekly_availability=args.weekly_availability,
                     constraints=args.constraints,
                     sensors=args.sensors,
+                    history_request=_history_metadata(args),
                 )
         except ValueError as exc:
             raise SystemExit(str(exc))
+        except (OSError, RuntimeError):
+            raise SystemExit(
+                "Athlete profile update could not finish safely. Inspect plan history and retry."
+            ) from None
         print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
         return
 
@@ -942,9 +1227,14 @@ def main() -> None:
                     success=args.success,
                     coaching_implication=args.coaching_implication,
                     evidence=args.evidence,
+                    history_request=_history_metadata(args),
                 )
         except ValueError as exc:
             raise SystemExit(str(exc))
+        except (OSError, RuntimeError):
+            raise SystemExit(
+                "Initial goals could not be saved safely. Inspect plan history and retry."
+            ) from None
         print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
         return
 
@@ -958,9 +1248,14 @@ def main() -> None:
                     discipline=args.discipline,
                     priority=args.priority,
                     location=args.location,
+                    history_request=_history_metadata(args),
                 )
         except ValueError as exc:
             raise SystemExit(str(exc))
+        except (OSError, RuntimeError):
+            raise SystemExit(
+                "Target event could not be saved safely. Inspect plan history and retry."
+            ) from None
         print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
         return
 
@@ -1031,9 +1326,26 @@ def main() -> None:
             if args.out
             else (config.data_dir / "calendar.json")
         )
-        with _workspace_refresh_lock(config.data_dir):
-            result = ingest_calendar(Path(args.csv_path), output_path)
-        print("Calendar import complete", result)
+        try:
+            with _workspace_refresh_lock(config.data_dir):
+                result = ingest_calendar(
+                    Path(args.csv_path),
+                    output_path,
+                    record_history=output_path.resolve()
+                    == (config.data_dir / "calendar.json").resolve(),
+                    history_request=_history_metadata(args),
+                )
+        except (OSError, RuntimeError, ValueError):
+            raise SystemExit(
+                "Calendar import could not finish safely. Inspect plan history and the source file."
+            ) from None
+        _print_json(
+            {
+                key: value
+                for key, value in result.items()
+                if key in {"weeks", "meta_rows", "history"}
+            }
+        )
         return
 
     if args.command == "build-plan":
@@ -1042,13 +1354,31 @@ def main() -> None:
             if args.out_dir
             else (config.data_dir / "plan")
         )
-        with _workspace_refresh_lock(config.data_dir):
-            result = build_plan_from_csv(Path(args.csv_path), output_dir)
-        print("Plan build complete", result)
+        try:
+            with _workspace_refresh_lock(config.data_dir):
+                result = build_plan_from_csv(
+                    Path(args.csv_path),
+                    output_dir,
+                    record_history=output_dir.resolve() == (config.data_dir / "plan").resolve(),
+                    history_request=_history_metadata(args),
+                )
+        except (OSError, RuntimeError, ValueError):
+            raise SystemExit(
+                "Plan import could not finish safely. Inspect plan history and the source file."
+            ) from None
+        _print_json(
+            {
+                key: value
+                for key, value in result.items()
+                if key in {"weeks", "events", "phases", "history"}
+            }
+        )
         return
 
     if args.command == "build-insights":
-        calendar_path = Path(args.calendar) if args.calendar else (config.data_dir / "calendar.json")
+        calendar_path = (
+            Path(args.calendar) if args.calendar else (config.data_dir / "calendar.json")
+        )
         output_dir = (
             ensure_private_output_path(Path(args.out_dir), action="write insights output")
             if args.out_dir
@@ -1073,9 +1403,16 @@ def main() -> None:
         try:
             result = refresh_configured_workspace(config.data_dir, local_only=args.local_only)
         except (RideConnectionError, OSError, RuntimeError, ValueError) as exc:
-            message = str(exc) if isinstance(exc, RideConnectionError) else "Workspace refresh failed. Check Connections and retry."
+            message = (
+                str(exc)
+                if isinstance(exc, RideConnectionError)
+                else "Workspace refresh failed. Check Connections and retry."
+            )
             raise SystemExit(message) from None
-        print("Workspace refresh complete", json.dumps(aggregate_refresh_result(result), separators=(",", ":"), sort_keys=True))
+        print(
+            "Workspace refresh complete",
+            json.dumps(aggregate_refresh_result(result), separators=(",", ":"), sort_keys=True),
+        )
         return
 
     if args.command == "serve-training-center":
@@ -1120,23 +1457,39 @@ def main() -> None:
         return
 
     if args.command == "add-coach-note":
-        with _workspace_refresh_lock(config.data_dir):
-            result = add_coach_note(
-                config.data_dir,
-                note_date=args.date,
-                note=args.note,
-                title=args.title,
-                ride_id=args.ride_id,
-                activity_name=args.activity_name,
-                tags=args.tags,
-                codex_thread_id=args.codex_thread_id,
-                codex_url=args.codex_url,
-            )
-            if not args.no_rebuild:
-                from .training_center import build_training_center
+        from .workspace_lock import workspace_identity, workspace_lock
 
-                result["training_center"] = build_training_center(config.data_dir)
-        print("Coach note added", json.dumps(result, sort_keys=True))
+        try:
+            identity = workspace_identity(config.data_dir)
+            with workspace_lock(config.data_dir, expected_identity=identity):
+                saved = add_coach_note(
+                    config.data_dir,
+                    note_date=args.date,
+                    note=args.note,
+                    title=args.title,
+                    ride_id=args.ride_id,
+                    activity_name=args.activity_name,
+                    tags=args.tags,
+                    codex_thread_id=args.codex_thread_id,
+                    codex_url=args.codex_url,
+                    idempotency_key=args.idempotency_key,
+                )
+                result = {
+                    "id": saved["entry"]["id"],
+                    "revision": saved["entry"].get("revision"),
+                    "created": saved.get("created", True),
+                    "count": saved["count"],
+                    "history_status": saved.get("history_status", "unavailable"),
+                    "external_access": False,
+                }
+                result.update(
+                    _local_plan_rebuild(config.data_dir, identity, enabled=not args.no_rebuild)
+                )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        except (OSError, RuntimeError):
+            raise SystemExit("Coach note could not be saved safely.") from None
+        _print_json(result)
         return
 
     if args.command == "update-goal-files":
@@ -1152,23 +1505,38 @@ def main() -> None:
             )
             if measurement is not None:
                 compile(measurement, args.measurement_file, "exec")
-        except (OSError, SyntaxError, ValueError) as exc:
-            raise SystemExit(str(exc))
-        with _workspace_refresh_lock(config.data_dir):
-            try:
+        except (OSError, SyntaxError, ValueError):
+            raise SystemExit(
+                "Goal source files must be valid bounded UTF-8 files; measurement code must compile."
+            ) from None
+        from .workspace_lock import workspace_identity, workspace_lock
+
+        try:
+            identity = workspace_identity(config.data_dir)
+            with workspace_lock(config.data_dir, expected_identity=identity):
                 updated = _install_goal_files(
                     config.data_dir,
                     goals=goals,
                     measurement=measurement,
+                    history_request=_history_metadata(args),
+                    expected_identity=identity,
                 )
-            except (OSError, RuntimeError) as exc:
-                raise SystemExit(str(exc))
-            result: dict[str, object] = {"updated": updated}
-            if not args.no_rebuild:
-                from .training_center import build_training_center
-
-                result["training_center"] = build_training_center(config.data_dir)
-        print("Goal files updated", json.dumps(result, sort_keys=True))
+                result = {
+                    "updated_files": len(updated["updated"]),
+                    "history": updated["history"],
+                    "status": updated["history"]["status"],
+                    "external_access": False,
+                }
+                result.update(
+                    _local_plan_rebuild(config.data_dir, identity, enabled=not args.no_rebuild)
+                )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        except (OSError, RuntimeError):
+            raise SystemExit(
+                "Goal update could not finish safely. Inspect plan history and retry."
+            ) from None
+        _print_json(result)
         return
 
     if args.command == "add-dashboard-label":
@@ -1201,6 +1569,7 @@ def main() -> None:
                 result["training_center"] = build_training_center(config.data_dir)
         print("Ride reaction added", json.dumps(result, sort_keys=True))
         return
+
 
 if __name__ == "__main__":
     main()

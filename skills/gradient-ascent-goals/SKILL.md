@@ -28,7 +28,7 @@ COACH_CLI="$WORKSPACE_DIR/.codex/bin/gradient-ascent"
 test -x "$COACH_CLI" || COACH_CLI="$(command -v gradient-ascent)"
 ```
 
-1. Read `plan/goals.md`, `plan/goals_template.md`, `plan/goal_measurement.py`, and the current plan context before proposing changes. If the goal files are missing in an existing workspace, rerun `"$COACH_CLI" init-workspace .` to backfill the starter files without replacing existing plan data.
+1. Read `plan/goals.md`, `plan/goals_template.md`, `plan/goal_measurement.py`, and the current plan context before proposing changes. Recall relevant season decisions with `coaching-context` and check `plan-history` before treating an earlier proposal as applied. If the goal files are missing in an existing workspace, rerun `"$COACH_CLI" init-workspace .` to backfill the starter files without replacing existing plan data.
 2. Ask what the athlete is really trying to make true, then separate:
    - outcomes: race result, finish, qualification, podium,
    - capabilities: FTP, repeatability, durability, descending, pack handling,
@@ -47,7 +47,7 @@ test -x "$COACH_CLI" || COACH_CLI="$(command -v gradient-ascent)"
    - manual or coach-judgment evidence,
    - what incomplete evidence should mean.
 7. When the user wants dashboard behavior, draft a temporary Python file for the Progress tab. The coach owns both the evaluation logic and the presentation.
-8. Install the drafts through the workspace-local command. It validates the Python draft, updates the canonical files under the workspace lock, and rebuilds the Training Center:
+8. Once the rider has approved applying the goals change, install the drafts through the workspace-local command. It validates the Python draft, updates the canonical files under the workspace lock, and rebuilds the Training Center:
 
 ```bash
 "$COACH_CLI" update-goal-files \
@@ -55,7 +55,7 @@ test -x "$COACH_CLI" || COACH_CLI="$(command -v gradient-ascent)"
   --measurement-file /path/to/goal-measurement-draft.py
 ```
 
-Omit `--measurement-file` when only the coaching contract changed. Never copy either draft directly into `plan/`.
+Omit `--measurement-file` when only the coaching contract changed. Never copy either draft directly into `plan/`. Include a concise `--reason` and an existing `--decision-id` when available, then check `plan-history` for the applied change. Saving a season-scoped decision through `$coach-note` is a separate, opt-in capture; it does not install the goals draft. See the [coaching history guide](https://github.com/rjmarsan/gradient-ascent/blob/main/docs/coaching-history.md).
 
 ## Judgment Rules
 

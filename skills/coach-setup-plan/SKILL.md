@@ -17,6 +17,14 @@ COACH_CLI="$WORKSPACE_DIR/.codex/bin/gradient-ascent"
 test -x "$COACH_CLI" || COACH_CLI="$(command -v gradient-ascent)"
 ```
 
+Before revising an existing plan, recall the relevant dates with `coaching-context`
+and inspect `plan-history`. Current canonical files and confirmed applied changes
+matter more than an old proposal. Keep drafting, saving a coaching decision, and
+applying a plan change separate; confirm the rider requested the actual mutation
+immediately before using a writer. The
+[coaching history guide](https://github.com/rjmarsan/gradient-ascent/blob/main/docs/coaching-history.md)
+describes expected file hashes, change reasons, and recovery of an interrupted write.
+
 2. If the rider has a CSV or XLSX calendar, ask for its path only when it is not already known:
 
 ```bash
@@ -110,7 +118,8 @@ a prescription.
 
 For device-ready cycling workouts, ask for any missing step durations, intensity,
 and explicit power ranges or an intentional open target. Store only the agreed
-prescription in the private workspace's `plan/workouts.json` version-1 document.
+prescription in the private workspace's `plan/workouts.json` version-1 document,
+using the validated `update-plan --file` command with the current expected hashes.
 That file is independently authoritative: preserve existing entries and never
 silently replace weekly prose, events, or another workout. Weekly prose and races
 remain calendar-only unless the rider separately authors an exact structured workout.

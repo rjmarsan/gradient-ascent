@@ -328,7 +328,7 @@ def _extract_athlete_profile(meta_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     return profile
 
 
-def build_plan_from_csv(csv_path: Path, output_dir: Path) -> Dict[str, Any]:
+def _plan_payloads_from_csv(csv_path: Path, output_dir: Path) -> tuple[dict[str, Any], Dict[str, Any]]:
     reader = iter_sheet_rows(csv_path)
     try:
         headers = next(reader)
@@ -463,16 +463,90 @@ def build_plan_from_csv(csv_path: Path, output_dir: Path) -> Dict[str, Any]:
         key=lambda event: (str(event.get("date") or ""), str(event.get("name") or "")),
     )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dir / "athlete.json", athlete)
-    write_json(output_dir / "events.json", event_entries)
-    write_json(output_dir / "weeks.json", week_entries)
-    write_json(output_dir / "phases.json", phases)
-    write_json(output_dir / "legend.json", legend)
-
-    return {
+    payloads = {
+        "athlete.json": athlete,
+        "events.json": event_entries,
+        "weeks.json": week_entries,
+        "phases.json": phases,
+        "legend.json": legend,
+    }
+    summary = {
         "weeks": len(week_entries),
         "events": len(event_entries),
         "phases": len(phases),
         "output_dir": str(output_dir),
     }
+    return payloads, summary
+
+
+def build_plan_from_csv(
+    csv_path: Path,
+    output_dir: Path,
+    *,
+    record_history: bool | None = None,
+    history_request: dict[str, Any] | None = None,
+    expected_identity: tuple[int, int] | None = None,
+) -> Dict[str, Any]:
+    """Prepare the whole import before changing any authoritative plan file."""
+    from .plan_changes import (
+        change_request,
+        commit_plan_files,
+        file_digest,
+        json_bytes,
+        scopes_for_dates,
+    )
+    from . import coaching_history, recording_repair
+    from .workspace_lock import workspace_identity, workspace_lock
+
+    output_dir = Path(output_dir)
+    official = output_dir.name == "plan" if record_history is None else record_history
+    if not official:
+        payloads, summary = _plan_payloads_from_csv(csv_path, output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for name, payload in payloads.items():
+            write_json(output_dir / name, payload)
+        return summary
+    if output_dir.name != "plan":
+        raise ValueError("Official plan imports must target the workspace plan directory.")
+    data_dir = output_dir.parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+    identity = expected_identity if expected_identity is not None else workspace_identity(data_dir)
+    with workspace_lock(data_dir, expected_identity=identity):
+        supported = coaching_history.history_write_available(data_dir)
+        filenames = ("athlete.json", "events.json", "weeks.json", "phases.json", "legend.json")
+        expected = None
+        if supported:
+            with recording_repair._directory(data_dir) as root:
+                expected = {
+                    f"plan/{name}": file_digest(coaching_history._read_target(root, f"plan/{name}"))
+                    for name in filenames
+                }
+                recording_repair._assert_generation(data_dir, root, identity)
+        old_weeks = read_json(output_dir / "weeks.json", default=[]) or []
+        payloads, summary = _plan_payloads_from_csv(csv_path, output_dir)
+        dates = [
+            str(week.get(key) or "")
+            for week in [
+                *(old_weeks if isinstance(old_weeks, list) else []),
+                *payloads["weeks.json"],
+            ]
+            if isinstance(week, dict)
+            for key in ("start_date", "end_date")
+        ]
+        result = commit_plan_files(
+            data_dir,
+            {f"plan/{name}": json_bytes(payload) for name, payload in payloads.items()},
+            request=change_request(
+                "import-plan",
+                title="Import training plan",
+                rationale="Imported a reviewed training-plan file. No additional coaching rationale was supplied.",
+                scopes=scopes_for_dates(dates),
+                supplied=history_request,
+            ),
+            expected_identity=identity,
+            expected_hashes=expected,
+            legacy_fallback=True,
+            retry_from_current=True,
+            inferred_scopes="scopes" not in (history_request or {}),
+        )
+        return {**summary, "history": result}

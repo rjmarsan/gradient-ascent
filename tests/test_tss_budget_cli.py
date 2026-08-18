@@ -236,13 +236,14 @@ class TssBudgetCliTest(unittest.TestCase):
                     side_effect=replace_after_update,
                 ) as update,
                 patch("gradient_ascent.training_center.build_training_center") as rebuild,
-                self.assertRaises(SystemExit) as caught,
             ):
-                run_cli(root, "update-tss-budgets", "--file", str(draft))
+                result = run_cli(root, "update-tss-budgets", "--file", str(draft))
             update.assert_called_once()
             rebuild.assert_not_called()
-            self.assertIn("could not finish safely", str(caught.exception))
-            self.assertNotIn(str(root), str(caught.exception))
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual(result["rebuild_error"], {"stage": "insights", "type": "RuntimeError"})
+            self.assertFalse(result["rebuilt"])
+            self.assertNotIn(str(root), json.dumps(result))
             self.assertEqual(load_tss_budgets(root), {})
 
     def test_replacement_after_insights_cannot_receive_dashboard_rebuild(self) -> None:
@@ -263,12 +264,15 @@ class TssBudgetCliTest(unittest.TestCase):
                     "gradient_ascent.cli.build_insights", side_effect=replace_after_insights
                 ) as insights,
                 patch("gradient_ascent.training_center.build_training_center") as rebuild,
-                self.assertRaises(SystemExit) as caught,
             ):
-                run_cli(root, "update-tss-budgets", "--file", str(draft))
+                result = run_cli(root, "update-tss-budgets", "--file", str(draft))
             insights.assert_called_once()
             rebuild.assert_not_called()
-            self.assertIn("could not finish safely", str(caught.exception))
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual(
+                result["rebuild_error"], {"stage": "dashboard", "type": "RuntimeError"}
+            )
+            self.assertFalse(result["rebuilt"])
             self.assertEqual(load_tss_budgets(root), {})
 
     def test_filesystem_failures_do_not_echo_private_paths(self) -> None:
@@ -293,12 +297,13 @@ class TssBudgetCliTest(unittest.TestCase):
                     "gradient_ascent.training_center.build_training_center",
                     side_effect=ValueError("PRIVATE_PATH"),
                 ) as rebuild,
-                self.assertRaises(SystemExit) as caught,
             ):
-                run_cli(root, "update-tss-budgets", "--file", str(draft))
+                result = run_cli(root, "update-tss-budgets", "--file", str(draft))
             rebuild.assert_called_once_with(root)
-            self.assertIn("could not finish safely", str(caught.exception))
-            self.assertNotIn("PRIVATE_PATH", str(caught.exception))
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual(result["rebuild_error"], {"stage": "dashboard", "type": "ValueError"})
+            self.assertFalse(result["rebuilt"])
+            self.assertNotIn("PRIVATE_PATH", json.dumps(result))
 
     def test_schema_validation_remains_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

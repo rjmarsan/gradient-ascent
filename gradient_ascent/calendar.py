@@ -60,7 +60,7 @@ def _parse_range(label: str) -> Tuple[Optional[str], Optional[str]]:
     return _parse_date(match.group(1)), _parse_date(match.group(2))
 
 
-def ingest_calendar(calendar_path: Path, output_path: Path) -> Dict[str, Any]:
+def _calendar_payload(calendar_path: Path) -> tuple[dict[str, Any], int]:
     reader = iter_sheet_rows(calendar_path)
     try:
         headers = next(reader)
@@ -119,9 +119,68 @@ def ingest_calendar(calendar_path: Path, output_path: Path) -> Dict[str, Any]:
         ],
     }
 
-    write_json(output_path, payload)
-    return {
-        "weeks": len(weeks),
-        "meta_rows": len(meta_rows),
-        "output": str(output_path),
-    }
+    return payload, len(meta_rows)
+
+
+def ingest_calendar(
+    calendar_path: Path,
+    output_path: Path,
+    *,
+    record_history: bool | None = None,
+    history_request: dict[str, Any] | None = None,
+    expected_identity: tuple[int, int] | None = None,
+) -> Dict[str, Any]:
+    from . import coaching_history, recording_repair
+    from .plan_changes import (
+        change_request,
+        commit_plan_files,
+        file_digest,
+        json_bytes,
+        scopes_for_dates,
+    )
+    from .workspace_lock import workspace_identity, workspace_lock
+
+    output_path = Path(output_path)
+    official = output_path.name == "calendar.json" if record_history is None else record_history
+    payload, meta_count = _calendar_payload(calendar_path)
+    summary = {"weeks": len(payload["weeks"]), "meta_rows": meta_count, "output": str(output_path)}
+    if not official:
+        write_json(output_path, payload)
+        return summary
+    if output_path.name != "calendar.json":
+        raise ValueError("Official calendar imports must target workspace calendar.json.")
+    data_dir = output_path.parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+    identity = expected_identity if expected_identity is not None else workspace_identity(data_dir)
+    with workspace_lock(data_dir, expected_identity=identity):
+        expected = None
+        if coaching_history.history_write_available(data_dir):
+            with recording_repair._directory(data_dir) as root:
+                expected = {
+                    "calendar.json": file_digest(
+                        coaching_history._read_target(root, "calendar.json")
+                    )
+                }
+                recording_repair._assert_generation(data_dir, root, identity)
+        dates = [
+            str(week.get(key) or "")
+            for week in payload["weeks"]
+            for key in ("start_date", "end_date")
+        ]
+        result = commit_plan_files(
+            data_dir,
+            {"calendar.json": json_bytes(payload)},
+            request=change_request(
+                "import-calendar",
+                title="Import source calendar",
+                rationale="Imported a reviewed source calendar. No additional coaching rationale was supplied.",
+                scopes=scopes_for_dates(dates),
+                supplied=history_request,
+            ),
+            expected_identity=identity,
+            expected_hashes=expected,
+            legacy_fallback=True,
+            retry_from_current=True,
+            inferred_scopes="scopes" not in (history_request or {}),
+        )
+        return {**summary, "history": result}

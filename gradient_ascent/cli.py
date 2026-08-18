@@ -141,8 +141,8 @@ def _parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     provider_choices = provider_keys()
 
-    def history_flags(target):
-        target.add_argument("--reason", help="Explicit rationale for the official plan change")
+    def history_flags(target, *, required_reason=False):
+        target.add_argument("--reason", required=required_reason, help="Explicit rationale for the official plan change")
         target.add_argument("--decision-id", help="Existing coaching decision to link")
         target.add_argument("--change-key", help="Stable idempotency key for safe retries")
 
@@ -255,6 +255,16 @@ def _parse_args() -> argparse.Namespace:
     onboarding_profile_parser.add_argument("--constraint", action="append", dest="constraints")
     onboarding_profile_parser.add_argument("--sensor", action="append", dest="sensors")
     history_flags(onboarding_profile_parser)
+
+    ftp_parser = subparsers.add_parser("set-ftp", help="Record an effective-dated FTP without rewriting earlier load")
+    ftp_parser.add_argument("--watts", type=float, required=True)
+    ftp_parser.add_argument("--effective-date", required=True)
+    ftp_parser.add_argument("--replace-date", action="store_true", help="Explicitly correct an existing dated value")
+    ftp_parser.add_argument("--expected-profile", help="Expected athlete profile SHA-256 from ftp-history")
+    ftp_parser.add_argument("--no-rebuild", action="store_true")
+    history_flags(ftp_parser, required_reason=True)
+    ftp_status_parser = subparsers.add_parser("ftp-history", help="Inspect the private dated FTP history")
+    ftp_status_parser.add_argument("--date", dest="on_date")
 
     onboarding_goals_parser = subparsers.add_parser(
         "onboarding-goals",
@@ -1029,6 +1039,27 @@ def main() -> None:
             raise SystemExit(
                 "Coaching history action could not finish safely. Inspect plan history and retry."
             ) from None
+        _print_json(result)
+        return
+
+    if args.command in {"set-ftp", "ftp-history"}:
+        from .ftp_history import FTPHistoryError, ftp_history_status, set_ftp
+        from .workspace_lock import workspace_identity, workspace_lock
+
+        try:
+            identity = workspace_identity(config.data_dir)
+            with workspace_lock(config.data_dir, expected_identity=identity):
+                if args.command == "ftp-history":
+                    result = ftp_history_status(config.data_dir, on_date=args.on_date)
+                else:
+                    result = set_ftp(config.data_dir, args.watts, args.effective_date,
+                        replace=args.replace_date, expected_profile_sha256=args.expected_profile,
+                        history_request=_history_metadata(args), expected_identity=identity)
+                    result.update(_local_plan_rebuild(config.data_dir, identity, enabled=not args.no_rebuild))
+        except FTPHistoryError as exc:
+            raise SystemExit(str(exc)) from None
+        except (OSError, RuntimeError, ValueError):
+            raise SystemExit("FTP action could not finish safely. Inspect plan history and retry.") from None
         _print_json(result)
         return
 

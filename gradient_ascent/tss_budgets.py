@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import recording_repair as _recording_files
+from .ftp_history import ftp_period_context, resolve_ftp
 from .planned_load import (
     MAX_DAILY_TSS,
     MAX_WEEKLY_TSS,
@@ -344,6 +345,7 @@ def _context(root: int) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str
         "phases": phases,
         "workouts": workouts,
         "athlete": {key: athlete.get(key) for key in _PROFILE_KEYS},
+        **({"ftp_history": athlete["ftp_history"]} if "ftp_history" in athlete else {}),
         "goals_sha256": hashlib.sha256(goals).hexdigest(),
     }
 
@@ -361,10 +363,11 @@ def _overlaps(value: Any, start: str, end: str) -> bool:
 
 def _fingerprint(week: dict[str, Any], context: dict[str, Any]) -> str:
     start, end = _key(week)
+    profile = {**context["athlete"], **({"ftp_history": context["ftp_history"]} if "ftp_history" in context else {})}
     value = {
         "version": 1,
         "week": {key: week.get(key) for key in _WEEK_KEYS},
-        "athlete": context["athlete"],
+        "athlete": {**context["athlete"], **ftp_period_context(profile, start, end)},
         "goals_sha256": context["goals_sha256"],
         **{
             key: sorted(
@@ -523,7 +526,7 @@ def _daily_source_bounds(
         events = [item for item in context["events"] if _overlaps(item, day, day)]
         return _prescribed_range(_planned_load_for_day(text, events, source_load=source))
     bounds = [
-        _prescribed_range(structured_workout_load(item, ftp_w=context["athlete"].get("ftp_w")))
+        _prescribed_range(structured_workout_load(item, ftp_w=resolve_ftp({**context["athlete"], **({"ftp_history": context["ftp_history"]} if "ftp_history" in context else {})}, day)["ftp_w"]))
         for item in workouts
     ]
     if any(item is None for item in bounds):

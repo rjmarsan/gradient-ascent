@@ -5,6 +5,12 @@ description: Import a training calendar, preserve events and week plans, or opti
 
 # Coach plan setup
 
+For an accepted FTP change, use `ftp-history` followed by the effective-dated
+`set-ftp` command with the rider's value, date, and rationale. Never overwrite the
+profile's FTP scalar independently. Review changed workout wattages and affected
+budget fingerprints as separate coaching decisions; see the
+[dated FTP workflow](https://github.com/rjmarsan/gradient-ascent/blob/main/docs/training-load.md#change-ftp-without-rewriting-earlier-load).
+
 ## Workflow
 
 1. Confirm the current directory is the private athlete workspace.

@@ -76,7 +76,7 @@ note remains distinct from applying a plan change.
 ## Apply a separately approved plan change
 
 After the rider explicitly approves the mutation, use the appropriate validated
-writer: `build-plan`, `update-goal-files`, `update-tss-budgets`, or `update-plan`.
+writer: `build-plan`, `update-goal-files`, `update-tss-budgets`, `set-ftp`, or `update-plan`.
 The existing import, goals, and budget writers accept `--reason`, `--decision-id`,
 and `--change-key` to explain the change, link a saved decision, and safely retry
 one operation. `update-plan` takes those semantics from its JSON `change` object,

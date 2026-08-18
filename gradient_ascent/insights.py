@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .storage import read_json, write_json
 from .activity_titles import is_placeholder_title
+from .ftp_history import resolve_ftp
 from .power_metrics import _valid_estimate, enrich_recording_power
 from .canonical import (
     canonical_activity_records,
@@ -308,7 +309,9 @@ def _meaningful_ride_fields(
     return False, "low_load_ride"
 
 
-def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dict[str, Any]:
+def _normalize_activity(activity: Dict[str, Any], ftp_w: float | dict[str, Any] | None) -> Dict[str, Any]:
+    activity_date = activity.get("date") or _parse_local_date(activity.get("start_date_local")) or _parse_local_date(activity.get("start_date"))
+    ftp = resolve_ftp(ftp_w if isinstance(ftp_w, dict) else {"ftp_w": ftp_w}, activity_date)
     raw = activity.get("raw") if isinstance(activity.get("raw"), dict) else activity
     source = activity.get("source") if isinstance(activity.get("source"), dict) else {}
     source_provider = source.get("provider")
@@ -362,7 +365,7 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
             if reported_load_seconds and observed >= reported_load_seconds - 1
             else "recorded_power",
         }
-    intensity_factor, estimated_tss = _training_load_fields(load_duration, weighted_watts, ftp_w)
+    intensity_factor, estimated_tss = _training_load_fields(load_duration, weighted_watts, ftp["ftp_w"])
     source_tss = _safe_float(activity.get("estimated_tss"))
     source_tss = source_tss if source_tss is not None and source_tss >= 0 else None
     source_if = _safe_float(activity.get("intensity_factor"))
@@ -416,7 +419,11 @@ def _normalize_activity(activity: Dict[str, Any], ftp_w: Optional[float]) -> Dic
         "type": activity.get("type"),
         "start_date": activity.get("start_date"),
         "start_date_local": activity.get("start_date_local"),
-        "date": activity.get("date") or _parse_local_date(activity.get("start_date_local")),
+        "date": activity_date,
+        "ftp_w": ftp["ftp_w"],
+        "ftp_source": ftp["source"],
+        "ftp_effective_date": ftp["effective_date"],
+        "estimated_tss_ftp_w": ftp["ftp_w"] if source_tss is None and estimated_tss is not None else None,
         "moving_time_s": moving_time_s,
         "timer_time_s": timer_seconds,
         "elapsed_time_s": activity.get("elapsed_time_s")
@@ -740,11 +747,11 @@ def build_insights(data_dir: Path, calendar_path: Optional[Path], output_dir: Pa
     output_dir.mkdir(parents=True, exist_ok=True)
 
     athlete = read_json(data_dir / "plan" / "athlete.json", default={}) or {}
-    ftp_w = _safe_float(athlete.get("ftp_w"))
+    resolve_ftp(athlete, None)  # Validate a dated history before writing derived files.
     resolved_activity_records, _ = resolve_activity_records(canonical_activity_records(data_dir))
     resolved_activity_records = enrich_recording_power(data_dir, resolved_activity_records, output_dir)
     activities = [
-        _normalize_activity(activity, ftp_w)
+        _normalize_activity(activity, athlete)
         for activity in resolved_activity_records
     ]
     write_json(output_dir / "activities.json", activities)

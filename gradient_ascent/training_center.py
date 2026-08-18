@@ -18,6 +18,7 @@ from .activity_titles import is_placeholder_title, select_activity_title
 from .coaching_context import build_coaching_context
 from .coach_notes import coach_notes_by_date
 from .dashboard_labels import day_labels_by_date, ride_annotations_by_id
+from .ftp_history import resolve_ftp
 from .planned_load import (
     MAX_DAILY_HOURS,
     MAX_DAILY_TSS,
@@ -37,7 +38,7 @@ from .workspace_lock import cross_process_locking_available, workspace_lock
 
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-ACTIVITY_DETAILS_CACHE_VERSION = 6
+ACTIVITY_DETAILS_CACHE_VERSION = 7
 MAX_ACTIVITY_DETAIL_SIDECAR_BYTES = 64 * 1024 * 1024
 _training_center_build_lock = workspace_lock
 WEEKDAY_NAMES = {
@@ -9925,9 +9926,9 @@ HTML_TEMPLATE = """<!doctype html>
       return { actual: hasRecordings ? cumulative(recorded) : [], planned, totalPoints: days.length, note: notes.join(" ") };
     }
 
-    function powerZoneClass(watts) {
+    function powerZoneClass(watts, ftpValue = POWER_ZONE_FTP) {
       const value = Number(watts || 0);
-      const ftp = Number(POWER_ZONE_FTP || 0);
+      const ftp = Number(ftpValue || 0);
       if (!Number.isFinite(value) || !Number.isFinite(ftp) || value <= 0 || ftp <= 0) return "zone-hr";
       const fraction = value / ftp;
       if (fraction <= 0.55) return "zone-z1";
@@ -9952,7 +9953,7 @@ HTML_TEMPLATE = """<!doctype html>
           return {
             value,
             duration: Math.max(30, Number(lap.moving_time_s || 0)),
-            zoneClass: watts ? powerZoneClass(watts) : "zone-hr"
+            zoneClass: watts ? powerZoneClass(watts, activity.ftp_w) : "zone-hr"
           };
         })
         .filter((bar) => Number.isFinite(bar.value) && bar.value > 0);
@@ -10118,7 +10119,7 @@ HTML_TEMPLATE = """<!doctype html>
       return values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
     }
 
-    function sparkSegments(points, values, source, width) {
+    function sparkSegments(points, values, source, width, ftpValue = POWER_ZONE_FTP) {
       if (!points.length) return "";
       return points.map((point, index) => {
         const left = index === 0
@@ -10127,7 +10128,7 @@ HTML_TEMPLATE = """<!doctype html>
         const right = index === points.length - 1
           ? Math.min(width, point[0] + 1.6)
           : Number((((point[0] + points[index + 1][0]) / 2) - 0.4).toFixed(1));
-        const zoneClass = source === "watts" ? powerZoneClass(values[index]) : "zone-hr";
+        const zoneClass = source === "watts" ? powerZoneClass(values[index], ftpValue) : "zone-hr";
         return `<line class="spark-segment ${zoneClass}" x1="${left}" x2="${right}" y1="${point[1]}" y2="${point[1]}"></line>`;
       }).join("");
     }
@@ -10148,7 +10149,7 @@ HTML_TEMPLATE = """<!doctype html>
       const elevationPoints = rangedPoints(dayElevationValues(day), width, height, 200, 3);
       const source = graph?.stream_shape?.source === "heartrate" ? "hr" : "watts";
       const streamLabel = graph?.stream_shape?.label || `${source === "hr" ? "HR" : "Power"} stream`;
-      const segments = sparkSegments(points, values, source, width);
+      const segments = sparkSegments(points, values, source, width, graph?.ftp_w);
       const background = elevationPoints.length
         ? `
             <polygon class="spark-elevation-fill" points="${areaString(elevationPoints, height, 3)}"></polygon>
@@ -12665,7 +12666,7 @@ def _structured_dashboard_workouts(
     for workout in load_structured_workouts(data_dir):
         if workout.get("structured") is not True:
             continue
-        load = _planned_load_display(structured_workout_load(workout, ftp_w=athlete.get("ftp_w")))
+        load = _planned_load_display(structured_workout_load(workout, ftp_w=resolve_ftp(athlete, workout["date"])["ftp_w"]))
         load["intensity"] = "structured"
         by_date.setdefault(workout["date"], []).append(
             {
@@ -12921,6 +12922,16 @@ def _activity_load_display(activity: dict[str, Any]) -> dict[str, Any]:
     estimate = activity.get("power_load_estimate")
     estimate = estimate if isinstance(estimate, dict) else {}
     estimated = source in {"estimated_source_np", "estimated_power_stream"}
+    ftp_w = _safe_float(activity.get("estimated_tss_ftp_w"))
+    ftp_basis = (
+        f"{ftp_w:g} W FTP effective {activity.get('ftp_effective_date')}"
+        if ftp_w is not None and activity.get("ftp_source") == "dated_history"
+        else f"the preserved {ftp_w:g} W legacy FTP baseline"
+        if ftp_w is not None and activity.get("ftp_source") == "legacy_baseline"
+        else f"your configured {ftp_w:g} W FTP"
+        if ftp_w is not None
+        else "the configured FTP for the activity date"
+    )
     partial = source == "estimated_power_stream" and estimate.get("scope") == "recorded_power"
     coverage = (
         _safe_float(estimate.get("coverage_ratio")) if source == "estimated_power_stream" else None
@@ -12938,13 +12949,13 @@ def _activity_load_display(activity: dict[str, Any]) -> dict[str, Any]:
             else "Some recorded power is missing. "
         )
         description = (
-            f"{coverage_text}Calculated from available power using your currently configured FTP. "
+            f"{coverage_text}Calculated from available power using {ftp_basis}. "
             "Missing power data is not extrapolated."
         )
     elif source == "estimated_power_stream":
-        description = "Calculated from recorded power and your currently configured FTP."
+        description = f"Calculated from recorded power and {ftp_basis}."
     elif source == "estimated_source_np":
-        description = "Calculated from source normalized power and your currently configured FTP."
+        description = f"Calculated from source normalized power and {ftp_basis}."
     elif source == "source":
         description = "Training load reported by the activity source."
     else:
@@ -12985,7 +12996,7 @@ def _totals_load_display(totals: dict[str, Any]) -> dict[str, Any]:
     if missing_label:
         qualifiers.append(missing_label)
     descriptions = [
-        "Includes calculated TSS using your currently configured FTP."
+        "Includes calculated TSS using the configured FTP for each activity date."
         if estimated
         else "Training load reported by the imported activities."
     ]
@@ -13634,6 +13645,9 @@ def _activity_detail(
     )
     detail = {
         "id": activity_id,
+        "ftp_w": activity.get("ftp_w"),
+        "ftp_source": activity.get("ftp_source"),
+        "ftp_effective_date": activity.get("ftp_effective_date"),
         "name": display_name,
         "name_from_plan": name_from_plan,
         "sport": activity.get("sport_type") or activity.get("type") or "Activity",

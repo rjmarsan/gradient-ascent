@@ -25,6 +25,7 @@ The project is cycling-first. Setup stays conversational: the rider gives Codex 
 - Apple Health `export.xml` for workouts and recovery signals
 - optional provider-neutral activity and recovery sync through local companion manifests
 - local weekly, daily, and activity summaries
+- effective-dated FTP changes that preserve earlier calculated training load
 - a localhost Training Center with notes, source status, refresh, and archive upload
 - persistent coach notes and multi-perspective coaching advice
 

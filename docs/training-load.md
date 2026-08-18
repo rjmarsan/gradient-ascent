@@ -6,7 +6,7 @@ locally calculated values. A valid single FIT session supplies whole-activity
 NP/TSS/IF and device timer duration when present; lap NP values are never averaged
 into a substitute whole-ride NP. If TSS is missing but source NP is available,
 Gradient Ascent can calculate it using the device timer duration, or moving time
-when no valid timer duration is available, and your currently configured FTP.
+when no valid timer duration is available, and the FTP configured for the activity's local date.
 [Garmin's FIT activity format](https://developer.garmin.com/fit/file-types/activity/)
 
 For a local recording without source NP, Gradient Ascent can estimate NP from its
@@ -24,12 +24,46 @@ Estimated TSS is `hours × (NP / FTP)² × 100`. For a power-stream estimate, th
 duration is capped at the lesser of usable recorded power time and the reported
 load duration: device timer time when available, otherwise moving time. Moving
 time still determines the dashboard's riding-hours totals.
-It uses your **current configured FTP**, not an inferred historical FTP. Changing
-FTP can therefore change a locally estimated score after refresh. Different device
-processing, missing samples, or an older FTP can also produce a different result
+Effective-dated FTP changes apply only from their stated date onward. Before the
+first dated entry, the previous configured FTP is retained as a **legacy calculation
+baseline**, not presented as a recovered historical test result. Profiles without
+dated history retain the original single-value behavior. Different device
+processing, missing samples, or an older FTP can still produce a different result
 from the score originally shown by your device or TrainingPeaks. See TrainingPeaks'
 [NP explanation](https://help.trainingpeaks.com/hc/en-us/articles/204071804-Normalized-Power)
 and [TSS definition](https://www.trainingpeaks.com/learn/articles/estimating-training-stress-score-tss/).
+
+## Change FTP without rewriting earlier load
+
+Inspect the private history, then record an explicitly accepted value and date:
+
+```bash
+.codex/bin/gradient-ascent ftp-history --date 2026-06-30
+.codex/bin/gradient-ascent set-ftp --watts 250 --effective-date 2026-07-01 \
+  --reason "Accepted threshold test" --change-key accepted-ftp-july
+```
+
+These numbers are a synthetic command example. `set-ftp` records the change in
+official plan history and rebuilds local insights and the dashboard without a
+provider fetch. Use `--expected-profile SHA256` with the fingerprint returned by
+`ftp-history` to reject a stale edit. A conflicting entry on the same date requires
+`--replace-date`; identical retries can reuse `--change-key`. Future effective dates
+are not accepted. `--no-rebuild` saves the decision without rebuilding immediately.
+
+The version-1 `ftp_history` inside `plan/athlete.json` contains `baseline_w` and
+sorted `{effective_date,ftp_w}` entries. The baseline preserves the previous setting
+and is unknown if none was valid. Do not manufacture historical measurements or
+edit the current scalar independently of its history. Recorded source TSS/IF still
+wins; calculated activity details identify their actual FTP basis. Power-stream NP
+is cached independently of FTP, so changing FTP does not rewrite original recordings.
+
+Explicit-watt structured-workout forecasts use the workout date's FTP. Percentage
+targets remain percentages, and neither existing watt prescriptions nor weekly TSS
+budgets are automatically rescaled. Budget weeks whose FTP basis changes become
+`needs_review`; unaffected earlier weeks retain their fingerprints. Review the
+workouts and deliberately reapprove affected budgets using the normal plan-history
+workflow. Calendar re-import preserves the dated profile. These new authoring
+commands require the same secure filesystem support as official plan history.
 
 Ride with GPS imports use the provider's separate moving and total durations;
 stopped time is not counted as moving just because the next track point is in
